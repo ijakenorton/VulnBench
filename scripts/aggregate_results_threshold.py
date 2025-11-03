@@ -236,12 +236,29 @@ def format_improvement_table(df):
             axis=1
         )
 
-    # Calculate percentage improvement
+    # Calculate percentage improvement (handle division by zero)
     if 'default_f1_mean' in df.columns and 'f1_improvement_mean' in df.columns:
-        imp_df['percent_improvement'] = ((imp_df['f1_improvement_mean'] / imp_df['default_f1_mean']) * 100)
-        imp_df['percent_improvement_formatted'] = imp_df['percent_improvement'].apply(
-            lambda x: f"{x:+.1f}%"
-        )
+        def calc_percent_improvement(row):
+            if row['default_f1_mean'] < 0.001:  # Nearly zero
+                if row['f1_improvement_mean'] > 0.001:
+                    return float('inf')  # Improved from nothing
+                else:
+                    return 0.0  # Still nothing
+            return (row['f1_improvement_mean'] / row['default_f1_mean']) * 100
+
+        imp_df['percent_improvement'] = imp_df.apply(calc_percent_improvement, axis=1)
+
+        def format_percent(x):
+            if x == float('inf'):
+                return "+∞ (baseline=0)"
+            elif x == float('-inf'):
+                return "-∞"
+            elif pd.isna(x):
+                return "N/A"
+            else:
+                return f"{x:+.1f}%"
+
+        imp_df['percent_improvement_formatted'] = imp_df['percent_improvement'].apply(format_percent)
 
     # Format default F1 for reference
     if 'default_f1_mean' in df.columns and 'default_f1_std' in df.columns:
