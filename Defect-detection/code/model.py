@@ -7,18 +7,98 @@ from torch.autograd import Variable
 import copy
 from torch.nn import CrossEntropyLoss, MSELoss
 
-    
-    
-class Model(nn.Module):   
+
+def cb_focal_loss(logits, labels, samples_per_cls, beta=0.9999, gamma=2.0):
+    """
+    Class-Balanced Focal Loss
+
+    Args:
+        logits: Raw logits from model (before sigmoid)
+        labels: Binary labels (0 or 1)
+        samples_per_cls: List/tensor with [num_negative_samples, num_positive_samples]
+        beta: Class-balanced loss hyperparameter (default: 0.9999)
+        gamma: Focal loss focusing parameter (default: 2.0)
+
+    Returns:
+        loss: Scalar loss value
+    """
+    labels = labels.float()
+
+    # Ensure samples_per_cls is on the same device as labels
+    if not isinstance(samples_per_cls, torch.Tensor):
+        samples_per_cls = torch.tensor(samples_per_cls, dtype=torch.float32)
+    samples_per_cls = samples_per_cls.to(labels.device)
+
+    # Calculate effective number of samples
+    effective_num = 1.0 - torch.pow(beta, samples_per_cls)
+    weights = (1.0 - beta) / effective_num
+    weights = weights / weights.sum() * 2.0  # Normalize to sum to 2 (for binary case)
+
+    # Get class weights for each sample
+    # weights[0] for negative class (label=0), weights[1] for positive class (label=1)
+    sample_weights = labels * weights[1] + (1 - labels) * weights[0]
+
+    # Calculate focal loss components
+    probs = torch.sigmoid(logits)
+
+    # Binary cross-entropy
+    bce = -(labels * torch.log(probs + 1e-10) + (1 - labels) * torch.log(1 - probs + 1e-10))
+
+    # Focal modulation factor
+    # pt is the probability of the true class
+    pt = labels * probs + (1 - labels) * (1 - probs)
+    focal_weight = torch.pow(1 - pt, gamma)
+
+    # Combine all components
+    loss = focal_weight * bce * sample_weights
+
+    return loss.mean()
+
+
+def compute_loss(logits, labels, args, samples_per_cls=None):
+    """
+    Unified loss computation function that supports multiple loss types.
+
+    Args:
+        logits: Raw logits from model (before sigmoid)
+        labels: Binary labels (0 or 1)
+        args: Arguments object containing loss configuration
+        samples_per_cls: For CB-Focal loss, list/tensor with [num_neg, num_pos]
+
+    Returns:
+        loss: Scalar loss value
+    """
+    loss_type = getattr(args, 'loss_type', 'bce')
+
+    if loss_type == 'cb_focal':
+        # CB-Focal Loss
+        if samples_per_cls is None:
+            raise ValueError("samples_per_cls must be provided for cb_focal loss")
+        beta = getattr(args, 'cb_beta', 0.9999)
+        gamma = getattr(args, 'focal_gamma', 2.0)
+        return cb_focal_loss(logits, labels, samples_per_cls, beta=beta, gamma=gamma)
+    else:
+        # Standard BCE with pos_weight (default)
+        pos_weight = torch.tensor(getattr(args, 'pos_weight', 1.0)).to(labels.device)
+        return torch.nn.functional.binary_cross_entropy_with_logits(
+            logits, labels, pos_weight=pos_weight
+        )
+
+
+
+class Model(nn.Module):
     def __init__(self, encoder,config,tokenizer,args):
         super(Model, self).__init__()
         self.encoder = encoder
         self.config=config
         self.tokenizer=tokenizer
         self.args=args
-    
+
         # Define dropout layer, dropout_probability is taken from args.
         self.dropout = nn.Dropout(args.dropout_probability)
+
+        # Store class distribution for CB-Focal loss
+        self.samples_per_cls = getattr(args, 'samples_per_cls', None)
 
         
     def _forward(self, input_ids=None,labels=None): 
@@ -47,13 +127,8 @@ class Model(nn.Module):
         if labels is not None:
             labels = labels.float()
 
-            # Use built-in weighted BCE
-            pos_weight = torch.tensor(getattr(self.args, 'pos_weight', 1.0)).to(labels.device)
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(
-                logits[:, 0],
-                labels,
-                pos_weight=pos_weight
-            )
+            # Use unified loss computation
+            loss = compute_loss(logits[:, 0], labels, self.args, self.samples_per_cls)
 
             return loss, prob
         else:
@@ -72,6 +147,9 @@ class LineVulModel(nn.Module):
         # Define dropout layer, dropout_probability is taken from args
         self.dropout = nn.Dropout(args.dropout_probability)
 
+        # Store class distribution for CB-Focal loss
+        self.samples_per_cls = getattr(args, 'samples_per_cls', None)
+
     def forward(self, input_ids=None, labels=None):
         # Get logits from encoder (shape: [batch_size, 2])
         outputs = self.encoder(input_ids, attention_mask=input_ids.ne(1))
@@ -89,17 +167,8 @@ class LineVulModel(nn.Module):
         if labels is not None:
             labels = labels.float()
 
-            # Use cross-entropy loss with pos_weight
-            # Convert to class indices for CrossEntropyLoss
-            pos_weight = torch.tensor([1.0, getattr(self.args, 'pos_weight', 1.0)]).to(labels.device)
-
-            # Use binary cross-entropy on the vulnerability class logits
-            # This maintains compatibility with the pos_weight parameter
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(
-                logits[:, 1],
-                labels,
-                pos_weight=torch.tensor(getattr(self.args, 'pos_weight', 1.0)).to(labels.device)
-            )
+            # Use unified loss computation
+            loss = compute_loss(logits[:, 1], labels, self.args, self.samples_per_cls)
 
             return loss, prob
         else:
@@ -121,6 +190,9 @@ class CodeT5Model(nn.Module):
         num_labels = getattr(config, 'num_labels', 1)
         # CodeT5-base has 768 hidden size, same as CodeBERT
         self.classifier = nn.Linear(config.hidden_size, num_labels)
+
+        # Store class distribution for CB-Focal loss
+        self.samples_per_cls = getattr(args, 'samples_per_cls', None)
         
     def forward(self, input_ids=None, labels=None):
         # Use only the encoder part of CodeT5
@@ -144,12 +216,10 @@ class CodeT5Model(nn.Module):
         
         if labels is not None:
             labels = labels.float()
-            
-            # Same loss as your current model
-            pos_weight = getattr(self.args, 'pos_weight', 1.0)
-            loss = torch.log(prob[:, 0] + 1e-10) * labels * pos_weight + torch.log((1-prob)[:, 0] + 1e-10) * (1-labels)
-            loss = -loss.mean()
-            
+
+            # Use unified loss computation
+            loss = compute_loss(logits[:, 0], labels, self.args, self.samples_per_cls)
+
             return loss, prob
         else:
             return prob
@@ -167,6 +237,9 @@ class CodeT5FullModel(nn.Module):
         # Respect config.num_labels - default to 2 for backwards compatibility
         num_labels = getattr(config, 'num_labels', 2)
         self.classifier = nn.Linear(config.hidden_size, num_labels)
+
+        # Store class distribution for CB-Focal loss
+        self.samples_per_cls = getattr(args, 'samples_per_cls', None)
         
     def get_t5_vec(self, source_ids):
         attention_mask = source_ids.ne(self.tokenizer.pad_token_id)
@@ -227,13 +300,8 @@ class CodeT5FullModel(nn.Module):
             else:
                 binary_logits = logits.squeeze()
 
-            # Use proper weighted BCE loss like other models - SAME as NatGen
-            pos_weight = torch.tensor(getattr(self.args, 'pos_weight', 1.0)).to(labels.device)
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(
-                binary_logits,
-                labels,
-                pos_weight=pos_weight
-            )
+            # Use unified loss computation
+            loss = compute_loss(binary_logits, labels, self.args, self.samples_per_cls)
 
             # Return probabilities in same format as other models - SAME as NatGen
             prob = torch.sigmoid(binary_logits.unsqueeze(1))
@@ -250,14 +318,17 @@ class CodeT5FullModel(nn.Module):
 class _CodeT5FullModel(nn.Module):
     """CodeT5 with full encoder-decoder + EOS token extraction"""
     def __init__(self, encoder, config, tokenizer, args):
-        super(CodeT5FullModel, self).__init__()
+        super(_CodeT5FullModel, self).__init__()
         self.encoder = encoder
         self.config = config
         self.tokenizer = tokenizer
         self.args = args
-        
+
         self.dropout = nn.Dropout(getattr(args, 'dropout_probability', 0.1))
         self.classifier = nn.Linear(config.hidden_size, 1)
+
+        # Store class distribution for CB-Focal loss
+        self.samples_per_cls = getattr(args, 'samples_per_cls', None)
         
     def get_t5_vec(self, source_ids):
         """Extract representation from decoder hidden states using EOS tokens"""
@@ -303,10 +374,10 @@ class _CodeT5FullModel(nn.Module):
         
         if labels is not None:
             labels = labels.float()
-            pos_weight = torch.tensor(getattr(self.args, 'pos_weight', 1.0)).to(labels.device)
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(
-                logits.squeeze(), labels, pos_weight=pos_weight
-            )
+
+            # Use unified loss computation
+            loss = compute_loss(logits.squeeze(), labels, self.args, self.samples_per_cls)
+
             return loss, prob
         else:
             return prob
@@ -322,6 +393,9 @@ class DefectModel(nn.Module):
         num_labels = getattr(config, 'num_labels', 2)
         self.classifier = nn.Linear(config.hidden_size, num_labels)
         self.args = args
+
+        # Store class distribution for CB-Focal loss
+        self.samples_per_cls = getattr(args, 'samples_per_cls', None)
 
     def get_t5_vec(self, source_ids):
         attention_mask = source_ids.ne(self.tokenizer.pad_token_id)
@@ -393,21 +467,16 @@ class DefectModel(nn.Module):
         
         if labels is not None:
             labels = labels.float()
-            
+
             # Extract vulnerability logit (class 1 = vulnerable)
             if logits.shape[1] == 2:
                 binary_logits = logits[:, 1]
             else:
                 binary_logits = logits.squeeze()
-            
-            # Use proper weighted BCE loss like other models
-            pos_weight = torch.tensor(getattr(self.args, 'pos_weight', 1.0)).to(labels.device)
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(
-                binary_logits, 
-                labels, 
-                pos_weight=pos_weight
-            )
-            
+
+            # Use unified loss computation
+            loss = compute_loss(binary_logits, labels, self.args, self.samples_per_cls)
+
             # Return probabilities in same format as other models
             prob = torch.sigmoid(binary_logits.unsqueeze(1))
             return loss, prob

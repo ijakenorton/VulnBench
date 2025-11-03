@@ -764,33 +764,53 @@ def test(args, model, tokenizer, tb_writer=None):
         }
     
     # Try different thresholds and find the best one
-    best_f1 = -1
+    best_score = -1
     best_threshold = 0.5
     best_metrics = None
     threshold_results = []
 
-    # Search for optimal threshold
+    # Search for optimal threshold based on chosen metric
     for threshold in np.arange(0.1, 0.9, 0.02):
         metrics = calculate_metrics_with_threshold(threshold, logits, labels)
         threshold_results.append(metrics)
 
-        if metrics["f1"] > best_f1:
-            best_f1 = metrics["f1"]
+        if args.threshold_metric == "f1":
+            # Standard F1 optimization
+            score = metrics["f1"]
+        elif args.threshold_metric == "precision":
+            # Precision-focused optimization with minimum recall constraint
+            if metrics["recall"] >= args.min_recall:
+                # Score combines precision (weighted), recall, and F1
+                score = (args.threshold_precision_weight * metrics["precision"] +
+                        metrics["recall"] +
+                        metrics["f1"])
+            else:
+                # Doesn't meet recall constraint, skip
+                score = -1
+        else:
+            score = metrics["f1"]  # fallback
+
+        if score > best_score:
+            best_score = score
             best_threshold = threshold
             best_metrics = metrics
 
-    # If no metrics were found (empty dataset or all F1=0), use default threshold
+    # If no metrics were found (empty dataset or all scores=-1), use default threshold
     if best_metrics is None:
-        logger.warning("No optimal threshold found (all F1 scores were 0). Using default threshold 0.5")
+        logger.warning(f"No optimal threshold found. Using default threshold 0.5")
         best_metrics = calculate_metrics_with_threshold(0.5, logits, labels)
+        best_threshold = 0.5
     
     # Also calculate with default 0.5 threshold
     default_metrics = calculate_metrics_with_threshold(0.5, logits, labels)
     
     # Log results
     logger.info("***** Threshold Analysis *****")
-    logger.info(f"Default threshold (0.5): F1={default_metrics['f1']:.4f}, Acc={default_metrics['accuracy']:.4f}")
-    logger.info(f"Optimal threshold ({best_threshold:.3f}): F1={best_metrics['f1']:.4f}, Acc={best_metrics['accuracy']:.4f}")
+    logger.info(f"Optimization metric: {args.threshold_metric}")
+    if args.threshold_metric == "precision":
+        logger.info(f"Min recall constraint: {args.min_recall:.2f}, Threshold precision weight: {args.threshold_precision_weight:.1f}")
+    logger.info(f"Default threshold (0.5): F1={default_metrics['f1']:.4f}, Precision={default_metrics['precision']:.4f}, Recall={default_metrics['recall']:.4f}")
+    logger.info(f"Optimal threshold ({best_threshold:.3f}): F1={best_metrics['f1']:.4f}, Precision={best_metrics['precision']:.4f}, Recall={best_metrics['recall']:.4f}")
     
     # Save detailed threshold analysis
     threshold_file = os.path.join(args.output_dir, "threshold_analysis.txt")
@@ -814,19 +834,24 @@ def test(args, model, tokenizer, tb_writer=None):
     comparison_file = os.path.join(args.output_dir, "threshold_comparison.txt")
     with open(comparison_file, "w") as f:
         f.write("=== THRESHOLD COMPARISON ===\n")
+        f.write(f"Optimization metric: {args.threshold_metric}\n")
+        if args.threshold_metric == "precision":
+            f.write(f"Min recall constraint: {args.min_recall:.2f}\n")
+            f.write(f"Threshold precision weight: {args.threshold_precision_weight:.1f}\n")
         f.write(f"Logits range: [{logits.min():.4f}, {logits.max():.4f}]\n")
         f.write(f"Logits mean±std: {logits.mean():.4f}±{logits.std():.4f}\n\n")
-        
+
         f.write("Default Threshold (0.5):\n")
         for key, value in default_metrics.items():
             f.write(f"  {key}: {value}\n")
-        
+
         f.write(f"\nOptimal Threshold ({best_threshold:.3f}):\n")
         for key, value in best_metrics.items():
             f.write(f"  {key}: {value}\n")
-        
+
         f.write(f"\nImprovement: F1 {best_metrics['f1'] - default_metrics['f1']:+.4f}, "
-               f"Acc {best_metrics['accuracy'] - default_metrics['accuracy']:+.4f}\n")
+               f"Precision {best_metrics['precision'] - default_metrics['precision']:+.4f}, "
+               f"Recall {best_metrics['recall'] - default_metrics['recall']:+.4f}\n")
         for key, value in best_metrics.items():
             f.write(f"  {key}: {value:.4f}\n")
     
@@ -1299,7 +1324,63 @@ def main():
         "--dropout_probability", type=float, default=0, help="dropout probability"
     )
     parser.add_argument(
-        "--pos_weight", default=1.0, type=float, help="Weight for positive class to prioritize recall"
+        "--pos_weight",
+        default=1.0,
+        type=float,
+        help="Weight for positive class in loss function during TRAINING. "
+             "Higher values (>1.0) prioritize recall, lower values (<1.0) prioritize precision. "
+             "Example: pos_weight=0.4 trains model to reduce false positives."
+    )
+
+    # Loss function selection
+    parser.add_argument(
+        "--loss_type",
+        default="bce",
+        type=str,
+        choices=["bce", "cb_focal"],
+        help="Loss function to use: 'bce' (standard binary cross-entropy with pos_weight) "
+             "or 'cb_focal' (Class-Balanced Focal Loss). Default: 'bce'"
+    )
+    parser.add_argument(
+        "--cb_beta",
+        default=0.9999,
+        type=float,
+        help="Class-balanced loss beta parameter (only used with loss_type='cb_focal'). "
+             "Controls the effective number of samples. Default: 0.9999"
+    )
+    parser.add_argument(
+        "--focal_gamma",
+        default=2.0,
+        type=float,
+        help="Focal loss gamma parameter (only used with loss_type='cb_focal'). "
+             "Controls focusing on hard examples. Default: 2.0"
+    )
+
+    # Threshold optimization args (POST-TRAINING inference)
+    parser.add_argument(
+        "--threshold_metric",
+        default="f1",
+        type=str,
+        choices=["f1", "precision"],
+        help="Metric to optimize when selecting threshold at INFERENCE time: "
+             "'f1' (default, balanced) or 'precision' (reduce false positives). "
+             "This is independent of pos_weight used during training."
+    )
+    parser.add_argument(
+        "--min_recall",
+        default=0.5,
+        type=float,
+        help="Minimum recall constraint when threshold_metric='precision'. "
+             "Ensures we still catch at least this fraction of vulnerabilities. "
+             "Default: 0.5 (catch ≥50%% of bugs)"
+    )
+    parser.add_argument(
+        "--threshold_precision_weight",
+        default=2.0,
+        type=float,
+        help="Weight for precision in threshold scoring when threshold_metric='precision'. "
+             "Higher values more aggressively favor precision. Default: 2.0. "
+             "NOTE: This is different from pos_weight (which affects training)."
     )
 
     #wandb args
@@ -1533,6 +1614,19 @@ def main():
         if args.local_rank == 0:
             torch.distributed.barrier()
 
+        # Compute class distribution for CB-Focal loss
+        if args.loss_type == 'cb_focal':
+            labels = [example.label for example in train_dataset.examples]
+            num_negative = sum(1 for label in labels if label == 0)
+            num_positive = sum(1 for label in labels if label == 1)
+            args.samples_per_cls = torch.tensor([num_negative, num_positive], dtype=torch.float32)
+            logger.info(f"Class distribution for CB-Focal loss: neg={num_negative}, pos={num_positive}")
+
+            # Update model with class distribution
+            model.samples_per_cls = args.samples_per_cls
+        else:
+            args.samples_per_cls = None
+
         train(args, train_dataset, model, tokenizer, tb_writer)
 
 
@@ -1541,8 +1635,16 @@ def main():
     if args.do_eval and args.local_rank in [-1, 0]:
         checkpoint_prefix = "checkpoint-best-acc/model.bin"
         output_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
-        model.load_state_dict(torch.load(output_dir))
-        model.to(args.device)
+
+        # Only load checkpoint if it exists (for trained models)
+        # For pretrained-only inference, use the already-loaded model
+        if os.path.exists(output_dir):
+            logger.info(f"Loading checkpoint from {output_dir}")
+            model.load_state_dict(torch.load(output_dir))
+            model.to(args.device)
+        else:
+            logger.info(f"No checkpoint found at {output_dir}, using pretrained model from {args.model_name_or_path}")
+
         result = evaluate(args, model, tokenizer)
         logger.info("***** Eval results *****")
         for key in sorted(result.keys()):
@@ -1556,8 +1658,16 @@ def main():
     if args.do_test and args.local_rank in [-1, 0]:
         checkpoint_prefix = "checkpoint-best-acc/model.bin"
         output_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
-        model.load_state_dict(torch.load(output_dir))
-        model.to(args.device)
+
+        # Only load checkpoint if it exists (for trained models)
+        # For pretrained-only inference, use the already-loaded model
+        if os.path.exists(output_dir):
+            logger.info(f"Loading checkpoint from {output_dir}")
+            model.load_state_dict(torch.load(output_dir))
+            model.to(args.device)
+        else:
+            logger.info(f"No checkpoint found at {output_dir}, using pretrained model from {args.model_name_or_path}")
+
         test(args, model, tokenizer, tb_writer)
 
     if args.use_wandb and args.local_rank in [-1, 0]:
