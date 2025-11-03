@@ -41,6 +41,14 @@ class ExperimentConfig:
     dropout_probability: float = 0.2
     use_wandb: bool = True
     wandb_project: str = "vulnerability-benchmark"
+    # Loss function configuration
+    loss_type: Literal["bce", "cb_focal"] = "bce"
+    cb_beta: float = 0.9999
+    focal_gamma: float = 2.0
+    # Threshold optimization (inference time - separate from pos_weight which affects training)
+    threshold_metric: Literal["f1", "precision"] = "f1"
+    min_recall: float = 0.5
+    threshold_precision_weight: float = 2.0
 
 
 class ConfigLoader:

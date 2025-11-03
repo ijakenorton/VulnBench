@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
+from datetime import datetime
 
 from schemas import ConfigLoader, ExperimentConfig, ModelConfig, DatasetConfig
 from find_missing_experiments import (
@@ -33,6 +34,7 @@ class ExperimentRunner:
         self.data_dir = self.project_root / "data"
         self.models_dir = self.project_root / "models"
         self.code_dir = self.project_root / "Defect-detection" / "code"
+        self.history_file = self.scripts_dir / "run_history.jsonl"
 
         self.config_loader = ConfigLoader(self.config_dir)
 
@@ -117,6 +119,20 @@ class ExperimentRunner:
             f"--seed={seed}",
         ])
 
+        # Add loss function parameters
+        cmd.extend([
+            f"--loss_type={experiment.loss_type}",
+            f"--cb_beta={experiment.cb_beta}",
+            f"--focal_gamma={experiment.focal_gamma}",
+        ])
+
+        # Add threshold optimization parameters (inference time)
+        cmd.extend([
+            f"--threshold_metric={experiment.threshold_metric}",
+            f"--min_recall={experiment.min_recall}",
+            f"--threshold_precision_weight={experiment.threshold_precision_weight}",
+        ])
+
         # Evaluation
         if experiment.mode == "train":
             cmd.append("--evaluate_during_training")
@@ -169,12 +185,67 @@ class ExperimentRunner:
 
         return wrap_cmd
 
+    def _log_run_history(self, experiment_file: Path, experiment: ExperimentConfig,
+                        job_ids: List[str], runs: List[Tuple[str, str, int]],
+                        mode: str, dry_run: bool = False) -> None:
+        """Log experiment run to history file.
+
+        Args:
+            experiment_file: Path to experiment config file
+            experiment: Experiment configuration
+            job_ids: List of submitted job IDs
+            runs: List of (model, dataset, seed) tuples that were executed
+            mode: Execution mode (e.g., "sbatch [direct]", "local", etc.)
+            dry_run: Whether this was a dry run
+        """
+        if dry_run:
+            return  # Don't log dry runs
+
+        # Convert to absolute path and then make relative
+        abs_exp_file = experiment_file.resolve()
+        try:
+            rel_path = abs_exp_file.relative_to(self.project_root)
+        except ValueError:
+            # If path is not relative to project root, use the full path
+            rel_path = abs_exp_file
+
+        history_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "experiment_file": str(rel_path),
+            "mode": mode,
+            "num_jobs": len(job_ids),
+            "job_ids": job_ids,
+            "config": {
+                "models": experiment.models,
+                "datasets": experiment.datasets,
+                "seeds": experiment.seeds,
+                "pos_weight": experiment.pos_weight,
+                "loss_type": getattr(experiment, 'loss_type', 'bce'),
+                "epoch": experiment.epoch,
+                "out_suffix": experiment.out_suffix,
+                "mode": experiment.mode,
+                "threshold_metric": experiment.threshold_metric,
+                "learning_rate": experiment.learning_rate,
+                "dropout_probability": experiment.dropout_probability,
+                "wandb_project": experiment.wandb_project if experiment.use_wandb else None,
+            },
+            "runs": [
+                {"model": model, "dataset": dataset, "seed": seed}
+                for model, dataset, seed in runs
+            ]
+        }
+
+        # Append to history file (JSONL format)
+        with open(self.history_file, 'a') as f:
+            f.write(json.dumps(history_entry) + '\n')
+
     def run_experiment(self, experiment: ExperimentConfig,
                       use_sbatch: bool = True,
                       legacy_mode: bool = False,
                       dry_run: bool = False,
                       fix_missing: bool = False,
-                      anonymized: bool = False) -> None:
+                      anonymized: bool = False,
+                      experiment_file: Optional[Path] = None) -> None:
         """Run an experiment.
 
         Args:
@@ -251,6 +322,7 @@ class ExperimentRunner:
 
         # Execute jobs
         job_count = 0
+        job_ids = []
         for model_name, dataset_name, seed in runs_to_execute:
             model = models[model_name]
             dataset = datasets[dataset_name]
@@ -274,7 +346,11 @@ class ExperimentRunner:
                         print(f"  Env vars: model_name={model.model_name}, dataset_name={dataset_name}, seed={seed}")
                         print()
                     else:
-                        subprocess.run(sbatch_cmd, env=env, check=True)
+                        result = subprocess.run(sbatch_cmd, env=env, check=True, capture_output=True, text=True)
+                        # Extract job ID from "Submitted batch job 123456"
+                        job_id = result.stdout.strip().split()[-1] if result.stdout else "unknown"
+                        job_ids.append(job_id)
+                        print(result.stdout.strip())
                 else:
                     # Direct mode: use sbatch --wrap with Python command
                     sbatch_cmd = self._build_sbatch_command(dataset, model_name, experiment, seed, legacy_mode=False)
@@ -289,7 +365,11 @@ class ExperimentRunner:
                         print(f"  --wrap: {wrap_cmd}")
                         print()
                     else:
-                        subprocess.run(sbatch_cmd, check=True)
+                        result = subprocess.run(sbatch_cmd, check=True, capture_output=True, text=True)
+                        # Extract job ID from "Submitted batch job 123456"
+                        job_id = result.stdout.strip().split()[-1] if result.stdout else "unknown"
+                        job_ids.append(job_id)
+                        print(result.stdout.strip())
             else:
                 # Run directly with Python (no sbatch)
                 env = self._setup_env(model, dataset, experiment, seed)
@@ -307,6 +387,11 @@ class ExperimentRunner:
 
         if not dry_run:
             print(f"Submitted {job_count} job(s)")
+
+            # Log run history
+            if experiment_file:
+                mode_str = f"sbatch [{mode_desc}]" if use_sbatch else "local"
+                self._log_run_history(experiment_file, experiment, job_ids, runs_to_execute, mode_str, dry_run)
         else:
             print(f"=== Would submit {job_count} job(s) ===")
 
@@ -400,7 +485,8 @@ Examples:
         legacy_mode=args.legacy,
         dry_run=args.dry_run,
         fix_missing=args.fix_missing,
-        anonymized=args.anonymized
+        anonymized=args.anonymized,
+        experiment_file=experiment_file
     )
 
 
