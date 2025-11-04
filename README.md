@@ -1,4 +1,4 @@
-# Defect Detection Benchmark
+# VulnBench
 
 Framework for benchmarking vulnerability/defect detection models. In my travels around this area of research, there are many different datasets and models used. Some have done benchmarking on several datasets and models. However, it adds a bunch of wasted time to every research project in the space if we all have to duplicate this work.
 
