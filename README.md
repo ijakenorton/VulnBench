@@ -165,7 +165,6 @@ python aggregate_results_threshold.py --results_dir ../models --output results_s
 2. **Add a new dataset**: Edit `config/datasets.json` with dataset path and metadata
 3. **Create experiment**: Create a new experiment config in `config/experiments/`
 4. **Run**: `python runner.py config/experiments/your_experiment.json`
-```
 
 # Hardware Requirements
 
