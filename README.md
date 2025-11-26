@@ -1,4 +1,4 @@
-# Defect Detection Benchmark
+# VulnBench
 
 Framework for benchmarking vulnerability/defect detection models. In my travels around this area of research, there are many different datasets and models used. Some have done benchmarking on several datasets and models. However, it adds a bunch of wasted time to every research project in the space if we all have to duplicate this work.
 
@@ -165,7 +165,6 @@ python aggregate_results_threshold.py --results_dir ../models --output results_s
 2. **Add a new dataset**: Edit `config/datasets.json` with dataset path and metadata
 3. **Create experiment**: Create a new experiment config in `config/experiments/`
 4. **Run**: `python runner.py config/experiments/your_experiment.json`
-```
 
 # Hardware Requirements
 
