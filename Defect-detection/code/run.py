@@ -44,6 +44,14 @@ from torch.utils.data import (
 from torch.utils.data.distributed import DistributedSampler
 import json
 
+# Import threshold optimization methods
+from threshold_optimization import (
+    grid_search_threshold,
+    ghost_threshold_optimization,
+    compare_threshold_methods,
+    calculate_metrics_with_threshold
+)
+
 try:
     from torch.utils.tensorboard import SummaryWriter
 except:
@@ -736,76 +744,60 @@ def test(args, model, tokenizer, tb_writer=None):
     logger.info(f"  Min: {logits.min():.4f}, Max: {logits.max():.4f}")
     logger.info(f"  Mean: {logits.mean():.4f}, Std: {logits.std():.4f}")
     logger.info(f"  Label distribution: Positive={(labels==1).sum()}, Negative={(labels==0).sum()}")
-    
-    def calculate_metrics_with_threshold(threshold, logits, labels):
-        """Calculate metrics for a given threshold"""
-        preds = logits[:, 0] > threshold
-        
-        true_vul = ((preds == 1) & (labels == 1)).sum()
-        false_vul = ((preds == 1) & (labels == 0)).sum()
-        false_non = ((preds == 0) & (labels == 1)).sum()
-        true_non = ((preds == 0) & (labels == 0)).sum()
-        
-        precision = true_vul / (true_vul + false_vul) if (true_vul + false_vul) > 0 else 0
-        recall = true_vul / (true_vul + false_non) if (true_vul + false_non) > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        accuracy = (true_vul + true_non) / len(labels)
-        
-        return {
-            "threshold": threshold,
-            "accuracy": accuracy,
-            "precision": precision,
-            "recall": recall,
-            "f1": f1,
-            "true_pos": int(true_vul),
-            "false_pos": int(false_vul),
-            "false_neg": int(false_non),
-            "true_neg": int(true_non)
-        }
-    
-    # Try different thresholds and find the best one
-    best_score = -1
-    best_threshold = 0.5
-    best_metrics = None
-    threshold_results = []
 
-    # Search for optimal threshold based on chosen metric
-    for threshold in np.arange(0.1, 0.9, 0.02):
-        metrics = calculate_metrics_with_threshold(threshold, logits, labels)
-        threshold_results.append(metrics)
+    # Define threshold search space
+    thresholds = np.arange(0.1, 0.9, 0.02)
 
-        if args.threshold_metric == "f1":
-            # Standard F1 optimization
-            score = metrics["f1"]
-        elif args.threshold_metric == "precision":
-            # Precision-focused optimization with minimum recall constraint
-            if metrics["recall"] >= args.min_recall:
-                # Score combines precision (weighted), recall, and F1
-                score = (args.threshold_precision_weight * metrics["precision"] +
-                        metrics["recall"] +
-                        metrics["f1"])
-            else:
-                # Doesn't meet recall constraint, skip
-                score = -1
-        else:
-            score = metrics["f1"]  # fallback
+    # Perform threshold optimization based on selected method
+    logger.info("***** Threshold Optimization *****")
+    logger.info(f"Method: {args.threshold_method}")
+    logger.info(f"Optimization metric: {args.threshold_metric}")
 
-        if score > best_score:
-            best_score = score
-            best_threshold = threshold
-            best_metrics = metrics
+    if args.threshold_method == "both":
+        # Compare both methods
+        comparison = compare_threshold_methods(
+            logits, labels, thresholds,
+            optimization_metric=args.threshold_metric,
+            ghost_metric=args.threshold_metric if args.threshold_metric in ["kappa", "mcc", "f1"] else "kappa",
+            n_subsets=args.ghost_n_subsets,
+            random_seed=args.seed
+        )
 
-    # If no metrics were found (empty dataset or all scores=-1), use default threshold
-    if best_metrics is None:
-        logger.warning(f"No optimal threshold found. Using default threshold 0.5")
-        best_metrics = calculate_metrics_with_threshold(0.5, logits, labels)
-        best_threshold = 0.5
-    
-    # Also calculate with default 0.5 threshold
-    default_metrics = calculate_metrics_with_threshold(0.5, logits, labels)
-    
+        # Use GHOST results as the "optimal" method when comparing both
+        best_threshold = comparison["ghost"]["threshold"]
+        best_metrics = comparison["ghost"]["metrics"]
+        default_metrics = comparison["default_metrics"]
+
+        # Store both for detailed output
+        grid_threshold = comparison["grid_search"]["threshold"]
+        grid_metrics = comparison["grid_search"]["metrics"]
+        threshold_results = comparison["grid_search"]["all_results"]
+        ghost_stats = comparison["ghost"]["statistics"]
+
+    elif args.threshold_method == "ghost":
+        # Use GHOST method only
+        best_threshold, best_metrics, ghost_stats = ghost_threshold_optimization(
+            logits, labels, thresholds,
+            optimization_metric=args.threshold_metric if args.threshold_metric in ["kappa", "mcc", "f1"] else "kappa",
+            n_subsets=args.ghost_n_subsets,
+            subset_size=args.ghost_subset_size,
+            random_seed=args.seed
+        )
+        default_metrics = calculate_metrics_with_threshold(0.5, logits, labels)
+        threshold_results = None
+
+    else:  # grid_search (default)
+        best_threshold, best_metrics, threshold_results = grid_search_threshold(
+            logits, labels, thresholds,
+            optimization_metric=args.threshold_metric,
+            min_recall=args.min_recall,
+            precision_weight=args.threshold_precision_weight
+        )
+        default_metrics = calculate_metrics_with_threshold(0.5, logits, labels)
+
     # Log results
-    logger.info("***** Threshold Analysis *****")
+    logger.info("***** Threshold Analysis Results *****")
+    logger.info(f"Method: {args.threshold_method}")
     logger.info(f"Optimization metric: {args.threshold_metric}")
     if args.threshold_metric == "precision":
         logger.info(f"Min recall constraint: {args.min_recall:.2f}, Threshold precision weight: {args.threshold_precision_weight:.1f}")
@@ -813,48 +805,143 @@ def test(args, model, tokenizer, tb_writer=None):
     logger.info(f"Optimal threshold ({best_threshold:.3f}): F1={best_metrics['f1']:.4f}, Precision={best_metrics['precision']:.4f}, Recall={best_metrics['recall']:.4f}")
     
     # Save detailed threshold analysis
-    threshold_file = os.path.join(args.output_dir, "threshold_analysis.txt")
-    with open(threshold_file, "w") as f:
-        f.write("Threshold\tAccuracy\tPrecision\tRecall\tF1\tTP\tFP\tFN\tTN\n")
-        for metrics in threshold_results:
-            f.write(f"{metrics['threshold']:.3f}\t{metrics['accuracy']:.4f}\t"
-                   f"{metrics['precision']:.4f}\t{metrics['recall']:.4f}\t{metrics['f1']:.4f}\t"
-                   f"{metrics['true_pos']}\t{metrics['false_pos']}\t"
-                   f"{metrics['false_neg']}\t{metrics['true_neg']}\n")
-    
+    if threshold_results is not None:
+        threshold_file = os.path.join(args.output_dir, "threshold_analysis.txt")
+        with open(threshold_file, "w") as f:
+            f.write("Threshold\tAccuracy\tPrecision\tRecall\tF1\tMCC\tKappa\tTP\tFP\tFN\tTN\n")
+            for metrics in threshold_results:
+                f.write(f"{metrics['threshold']:.3f}\t{metrics['accuracy']:.4f}\t"
+                       f"{metrics['precision']:.4f}\t{metrics['recall']:.4f}\t{metrics['f1']:.4f}\t"
+                       f"{metrics['mcc']:.4f}\t{metrics['kappa']:.4f}\t"
+                       f"{metrics['true_pos']}\t{metrics['false_pos']}\t"
+                       f"{metrics['false_neg']}\t{metrics['true_neg']}\n")
+
     # Use optimal threshold for final predictions
     final_preds = logits[:, 0] > best_threshold
-    
+
     # Save predictions
     with open(os.path.join(args.output_dir, "predictions.txt"), "w") as f:
         for example, pred in zip(eval_dataset.examples, final_preds):
             f.write(f"{example.idx}\t{int(pred)}\n")
-    
+
     # Save comparison of thresholds
     comparison_file = os.path.join(args.output_dir, "threshold_comparison.txt")
     with open(comparison_file, "w") as f:
-        f.write("=== THRESHOLD COMPARISON ===\n")
+        f.write("=== THRESHOLD OPTIMIZATION REPORT ===\n")
+        f.write(f"Method: {args.threshold_method}\n")
         f.write(f"Optimization metric: {args.threshold_metric}\n")
         if args.threshold_metric == "precision":
             f.write(f"Min recall constraint: {args.min_recall:.2f}\n")
             f.write(f"Threshold precision weight: {args.threshold_precision_weight:.1f}\n")
+
+        # Add GHOST-specific parameters if applicable
+        if args.threshold_method in ["ghost", "both"]:
+            f.write(f"\nGHOST Parameters:\n")
+            f.write(f"  Number of subsets: {args.ghost_n_subsets}\n")
+            f.write(f"  Subset size: {args.ghost_subset_size}\n")
+            if 'ghost_stats' in locals():
+                f.write(f"  Median {args.threshold_metric}: {ghost_stats['optimal_median_score']:.4f}±{ghost_stats['optimal_std_score']:.4f}\n")
+
+        f.write(f"\nData Statistics:\n")
         f.write(f"Logits range: [{logits.min():.4f}, {logits.max():.4f}]\n")
-        f.write(f"Logits mean±std: {logits.mean():.4f}±{logits.std():.4f}\n\n")
+        f.write(f"Logits mean±std: {logits.mean():.4f}±{logits.std():.4f}\n")
+        f.write(f"Label distribution: {(labels==1).sum()} positive, {(labels==0).sum()} negative\n\n")
 
         f.write("Default Threshold (0.5):\n")
         for key, value in default_metrics.items():
-            f.write(f"  {key}: {value}\n")
+            if isinstance(value, float):
+                f.write(f"  {key}: {value:.4f}\n")
+            else:
+                f.write(f"  {key}: {value}\n")
 
-        f.write(f"\nOptimal Threshold ({best_threshold:.3f}):\n")
+        f.write(f"\nOptimal Threshold ({best_threshold:.3f}) [{args.threshold_method}]:\n")
         for key, value in best_metrics.items():
-            f.write(f"  {key}: {value}\n")
+            if isinstance(value, float):
+                f.write(f"  {key}: {value:.4f}\n")
+            else:
+                f.write(f"  {key}: {value}\n")
 
-        f.write(f"\nImprovement: F1 {best_metrics['f1'] - default_metrics['f1']:+.4f}, "
-               f"Precision {best_metrics['precision'] - default_metrics['precision']:+.4f}, "
-               f"Recall {best_metrics['recall'] - default_metrics['recall']:+.4f}\n")
-        for key, value in best_metrics.items():
-            f.write(f"  {key}: {value:.4f}\n")
-    
+        # Add comparison for "both" method
+        if args.threshold_method == "both" and 'grid_threshold' in locals():
+            f.write(f"\nGrid Search Threshold ({grid_threshold:.3f}):\n")
+            for key, value in grid_metrics.items():
+                if isinstance(value, float):
+                    f.write(f"  {key}: {value:.4f}\n")
+                else:
+                    f.write(f"  {key}: {value}\n")
+
+        f.write(f"\nImprovement over default (0.5):\n")
+        f.write(f"  F1: {best_metrics['f1'] - default_metrics['f1']:+.4f}\n")
+        f.write(f"  Precision: {best_metrics['precision'] - default_metrics['precision']:+.4f}\n")
+        f.write(f"  Recall: {best_metrics['recall'] - default_metrics['recall']:+.4f}\n")
+        f.write(f"  MCC: {best_metrics['mcc'] - default_metrics['mcc']:+.4f}\n")
+        f.write(f"  Kappa: {best_metrics['kappa'] - default_metrics['kappa']:+.4f}\n")
+
+    # Save as JSON for easier parsing
+    comparison_json = {
+        "method": args.threshold_method,
+        "optimization_metric": args.threshold_metric,
+        "data_stats": {
+            "logits_min": float(logits.min()),
+            "logits_max": float(logits.max()),
+            "logits_mean": float(logits.mean()),
+            "logits_std": float(logits.std()),
+            "n_positive": int((labels==1).sum()),
+            "n_negative": int((labels==0).sum()),
+            "n_total": int(len(labels))
+        },
+        "default_threshold": {
+            "threshold": 0.5,
+            "metrics": {k: float(v) if isinstance(v, (float, np.floating)) else int(v)
+                       for k, v in default_metrics.items()}
+        },
+        "optimal_threshold": {
+            "threshold": float(best_threshold),
+            "method_used": args.threshold_method,
+            "metrics": {k: float(v) if isinstance(v, (float, np.floating)) else int(v)
+                       for k, v in best_metrics.items()}
+        },
+        "improvement": {
+            "f1": float(best_metrics['f1'] - default_metrics['f1']),
+            "precision": float(best_metrics['precision'] - default_metrics['precision']),
+            "recall": float(best_metrics['recall'] - default_metrics['recall']),
+            "accuracy": float(best_metrics['accuracy'] - default_metrics['accuracy']),
+            "mcc": float(best_metrics['mcc'] - default_metrics['mcc']),
+            "kappa": float(best_metrics['kappa'] - default_metrics['kappa'])
+        }
+    }
+
+    # Add GHOST-specific info if applicable
+    if args.threshold_method in ["ghost", "both"]:
+        comparison_json["ghost_params"] = {
+            "n_subsets": args.ghost_n_subsets,
+            "subset_size": args.ghost_subset_size
+        }
+        if 'ghost_stats' in locals():
+            comparison_json["ghost_stats"] = {
+                "optimal_median_score": float(ghost_stats['optimal_median_score']),
+                "optimal_std_score": float(ghost_stats['optimal_std_score'])
+            }
+
+    # Add grid search comparison if using "both"
+    if args.threshold_method == "both" and 'grid_threshold' in locals():
+        comparison_json["grid_search_threshold"] = {
+            "threshold": float(grid_threshold),
+            "metrics": {k: float(v) if isinstance(v, (float, np.floating)) else int(v)
+                       for k, v in grid_metrics.items()}
+        }
+
+    # Add precision optimization params if applicable
+    if args.threshold_metric == "precision":
+        comparison_json["precision_optimization"] = {
+            "min_recall": args.min_recall,
+            "precision_weight": args.threshold_precision_weight
+        }
+
+    json_file = os.path.join(args.output_dir, "threshold_results.json")
+    with open(json_file, "w") as f:
+        json.dump(comparison_json, f, indent=2)
+
     # Return both results for comparison
     result = {
         "test_acc": round(best_metrics["accuracy"], 4),
@@ -1358,12 +1445,23 @@ def main():
 
     # Threshold optimization args (POST-TRAINING inference)
     parser.add_argument(
+        "--threshold_method",
+        default="grid_search",
+        type=str,
+        choices=["grid_search", "ghost", "both"],
+        help="Threshold optimization method: "
+             "'grid_search' (default, simple), 'ghost' (GHOST: Generalized tHreshOld ShifTing), "
+             "or 'both' (compare both methods). "
+             "GHOST uses bootstrap aggregation for more robust threshold selection."
+    )
+    parser.add_argument(
         "--threshold_metric",
         default="f1",
         type=str,
-        choices=["f1", "precision"],
+        choices=["f1", "precision", "kappa", "mcc"],
         help="Metric to optimize when selecting threshold at INFERENCE time: "
-             "'f1' (default, balanced) or 'precision' (reduce false positives). "
+             "'f1' (default, balanced), 'precision' (reduce false positives), "
+             "'kappa' (Cohen's Kappa), or 'mcc' (Matthews Correlation Coefficient). "
              "This is independent of pos_weight used during training."
     )
     parser.add_argument(
@@ -1381,6 +1479,18 @@ def main():
         help="Weight for precision in threshold scoring when threshold_metric='precision'. "
              "Higher values more aggressively favor precision. Default: 2.0. "
              "NOTE: This is different from pos_weight (which affects training)."
+    )
+    parser.add_argument(
+        "--ghost_n_subsets",
+        default=100,
+        type=int,
+        help="Number of bootstrap subsets for GHOST threshold optimization. Default: 100"
+    )
+    parser.add_argument(
+        "--ghost_subset_size",
+        default=0.8,
+        type=float,
+        help="Proportion of samples per subset for GHOST (0-1). Default: 0.8"
     )
 
     #wandb args
@@ -1405,6 +1515,11 @@ def main():
         "--use_tensorboard",
         action="store_true",
         help="Whether to use tensorboard logging"
+    )
+    parser.add_argument(
+        "--allow_pretrained_only",
+        action="store_true",
+        help="Allow testing with pretrained model only (no fine-tuned checkpoint required)"
     )
     parser.add_argument(
         "--tensorboard_log_dir",
@@ -1492,8 +1607,8 @@ def main():
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
     # Set num_labels based on model type
-    # LineVul uses 2-class classifier, others use single output with sigmoid
-    if args.model_type == "linevul":
+    # LineVul and natgen use 2-class classifier, others use single output with sigmoid
+    if args.model_type in ["linevul", "natgen"]:
         config.num_labels = 2
     else:
         config.num_labels = 1
@@ -1636,14 +1751,26 @@ def main():
         checkpoint_prefix = "checkpoint-best-acc/model.bin"
         output_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
 
-        # Only load checkpoint if it exists (for trained models)
-        # For pretrained-only inference, use the already-loaded model
+        # Load checkpoint or validate pretrained-only usage
         if os.path.exists(output_dir):
             logger.info(f"Loading checkpoint from {output_dir}")
             model.load_state_dict(torch.load(output_dir))
             model.to(args.device)
         else:
-            logger.info(f"No checkpoint found at {output_dir}, using pretrained model from {args.model_name_or_path}")
+            # Checkpoint not found - determine if this is expected
+            if args.do_train:
+                raise RuntimeError(
+                    f"Expected checkpoint at {output_dir} but not found. "
+                    f"Training was requested but checkpoint is missing."
+                )
+            elif not args.allow_pretrained_only:
+                raise RuntimeError(
+                    f"No checkpoint found at {output_dir}. "
+                    f"To test with pretrained model only, use --allow_pretrained_only flag."
+                )
+            else:
+                logger.info(f"No checkpoint found at {output_dir}, using pretrained model from {args.model_name_or_path} (--allow_pretrained_only specified)")
+                model.to(args.device)
 
         result = evaluate(args, model, tokenizer)
         logger.info("***** Eval results *****")
@@ -1659,14 +1786,26 @@ def main():
         checkpoint_prefix = "checkpoint-best-acc/model.bin"
         output_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
 
-        # Only load checkpoint if it exists (for trained models)
-        # For pretrained-only inference, use the already-loaded model
+        # Load checkpoint or validate pretrained-only usage
         if os.path.exists(output_dir):
             logger.info(f"Loading checkpoint from {output_dir}")
             model.load_state_dict(torch.load(output_dir))
             model.to(args.device)
         else:
-            logger.info(f"No checkpoint found at {output_dir}, using pretrained model from {args.model_name_or_path}")
+            # Checkpoint not found - determine if this is expected
+            if args.do_train:
+                raise RuntimeError(
+                    f"Expected checkpoint at {output_dir} but not found. "
+                    f"Training was requested but checkpoint is missing."
+                )
+            elif not args.allow_pretrained_only:
+                raise RuntimeError(
+                    f"No checkpoint found at {output_dir}. "
+                    f"To test with pretrained model only, use --allow_pretrained_only flag."
+                )
+            else:
+                logger.info(f"No checkpoint found at {output_dir}, using pretrained model from {args.model_name_or_path} (--allow_pretrained_only specified)")
+                model.to(args.device)
 
         test(args, model, tokenizer, tb_writer)
 

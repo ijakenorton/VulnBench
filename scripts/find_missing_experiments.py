@@ -183,9 +183,16 @@ def get_actual_experiments(results_dir: Path, models_config: Dict, out_suffix: s
                 else:
                     dataset = dataset_part
 
-                # Check if results exist
-                threshold_file = exp_dir / "threshold_comparison.txt"
-                if threshold_file.exists():
+                # Check if experiment is complete (both checkpoint and threshold results exist)
+                checkpoint = exp_dir / "checkpoint-best-acc" / "model.bin"
+                threshold_json = exp_dir / "threshold_results.json"
+                threshold_txt = exp_dir / "threshold_comparison.txt"
+
+                # Experiment is complete if checkpoint exists AND threshold results exist
+                has_checkpoint = checkpoint.exists()
+                has_threshold = threshold_json.exists() or threshold_txt.exists()
+
+                if has_checkpoint and has_threshold:
                     actual.add((model_name, dataset, seed))
 
     return actual

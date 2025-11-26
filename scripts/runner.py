@@ -128,9 +128,12 @@ class ExperimentRunner:
 
         # Add threshold optimization parameters (inference time)
         cmd.extend([
+            f"--threshold_method={experiment.threshold_method}",
             f"--threshold_metric={experiment.threshold_metric}",
             f"--min_recall={experiment.min_recall}",
             f"--threshold_precision_weight={experiment.threshold_precision_weight}",
+            f"--ghost_n_subsets={experiment.ghost_n_subsets}",
+            f"--ghost_subset_size={experiment.ghost_subset_size}",
         ])
 
         # Evaluation
@@ -224,6 +227,7 @@ class ExperimentRunner:
                 "epoch": experiment.epoch,
                 "out_suffix": experiment.out_suffix,
                 "mode": experiment.mode,
+                "threshold_method": experiment.threshold_method,
                 "threshold_metric": experiment.threshold_metric,
                 "learning_rate": experiment.learning_rate,
                 "dropout_probability": experiment.dropout_probability,

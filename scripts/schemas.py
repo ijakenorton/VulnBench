@@ -46,9 +46,12 @@ class ExperimentConfig:
     cb_beta: float = 0.9999
     focal_gamma: float = 2.0
     # Threshold optimization (inference time - separate from pos_weight which affects training)
-    threshold_metric: Literal["f1", "precision"] = "f1"
+    threshold_method: Literal["grid_search", "ghost", "both"] = "grid_search"
+    threshold_metric: Literal["f1", "precision", "kappa", "mcc"] = "f1"
     min_recall: float = 0.5
     threshold_precision_weight: float = 2.0
+    ghost_n_subsets: int = 100
+    ghost_subset_size: float = 0.8
 
 
 class ConfigLoader:

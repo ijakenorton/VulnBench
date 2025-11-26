@@ -63,25 +63,31 @@ def extract_results_from_directory(results_dir):
             else:
                 continue  # Skip directories that don't match expected pattern
 
-            # Look for results files
-            threshold_file = exp_dir / "threshold_comparison.txt"
+            # Look for results files - prefer JSON, fallback to txt
+            threshold_json = exp_dir / "threshold_results.json"
+            threshold_txt = exp_dir / "threshold_comparison.txt"
             summary_file = exp_dir / "experiment_summary.txt"
 
-            if threshold_file.exists():
-                results = parse_threshold_comparison(threshold_file)
-                if results:
-                    results.update({
-                        'model': model_name,
-                        'dataset': dataset,
-                        'seed': seed,
-                        'pos_weight': pos_weight,
-                        'exp_dir': str(exp_dir)
-                    })
-                    all_results.append(results)
-                    improvement = results.get('f1_improvement', 0)
-                    print(f"  ✓ {exp_name}: F1={results.get('optimal_f1', 'N/A'):.4f}, Improvement={improvement:+.4f}")
-                else:
-                    print(f"  ✗ {exp_name}: Could not parse results")
+            if threshold_json.exists():
+                results = parse_threshold_json(threshold_json)
+            elif threshold_txt.exists():
+                results = parse_threshold_comparison(threshold_txt)
+            else:
+                results = None
+
+            if results:
+                results.update({
+                    'model': model_name,
+                    'dataset': dataset,
+                    'seed': seed,
+                    'pos_weight': pos_weight,
+                    'exp_dir': str(exp_dir)
+                })
+                all_results.append(results)
+                improvement = results.get('f1_improvement', 0)
+                print(f"  ✓ {exp_name}: F1={results.get('optimal_f1', 'N/A'):.4f}, Improvement={improvement:+.4f}")
+            elif threshold_json.exists() or threshold_txt.exists():
+                print(f"  ✗ {exp_name}: Could not parse results")
             else:
                 missing = {}
                 if exp_dir:
@@ -101,6 +107,54 @@ def extract_results_from_directory(results_dir):
 
     return all_results, missing_results
 
+def parse_threshold_json(threshold_json):
+    """Parse threshold_results.json file (new format)"""
+    try:
+        with open(threshold_json, 'r') as f:
+            data = json.load(f)
+
+        results = {}
+
+        # Extract default threshold metrics
+        if 'default_threshold' in data and 'metrics' in data['default_threshold']:
+            default_metrics = data['default_threshold']['metrics']
+            results['default_accuracy'] = default_metrics.get('accuracy')
+            results['default_precision'] = default_metrics.get('precision')
+            results['default_recall'] = default_metrics.get('recall')
+            results['default_f1'] = default_metrics.get('f1')
+
+        # Extract optimal threshold metrics
+        if 'optimal_threshold' in data:
+            optimal = data['optimal_threshold']
+            results['optimal_threshold'] = optimal.get('threshold')
+
+            if 'metrics' in optimal:
+                optimal_metrics = optimal['metrics']
+                results['optimal_accuracy'] = optimal_metrics.get('accuracy')
+                results['optimal_precision'] = optimal_metrics.get('precision')
+                results['optimal_recall'] = optimal_metrics.get('recall')
+                results['optimal_f1'] = optimal_metrics.get('f1')
+
+        # Extract improvement
+        if 'improvement' in data:
+            results['f1_improvement'] = data['improvement'].get('f1')
+
+        # Extract method info
+        results['threshold_method'] = data.get('method', 'unknown')
+        results['optimization_metric'] = data.get('optimization_metric', 'unknown')
+
+        # Extract GHOST stats if available
+        if 'ghost_stats' in data:
+            results['ghost_median_score'] = data['ghost_stats'].get('optimal_median_score')
+            results['ghost_std_score'] = data['ghost_stats'].get('optimal_std_score')
+
+        return results
+
+    except Exception as e:
+        print(f"Error parsing {threshold_json}: {e}")
+        return None
+
+
 def parse_threshold_comparison(threshold_file):
     """Parse the threshold_comparison.txt file to extract metrics"""
     try:
@@ -119,7 +173,9 @@ def parse_threshold_comparison(threshold_file):
             results['default_f1'] = extract_metric(default_section, 'f1')
 
         # Extract optimal threshold results
-        optimal_match = re.search(r'Optimal Threshold \(([\d.]+)\):\s*\n(.*?)(?=\n\nImprovement|$)', content, re.DOTALL)
+        # Handle both old format: "Optimal Threshold (0.38):"
+        # and new format: "Optimal Threshold (0.38) [ghost]:"
+        optimal_match = re.search(r'Optimal Threshold \(([\d.]+)\)(?:\s*\[[\w_]+\])?:\s*\n(.*?)(?=\n\n(?:Grid Search|Improvement)|$)', content, re.DOTALL)
         if optimal_match:
             optimal_threshold = float(optimal_match.group(1))
             optimal_section = optimal_match.group(2)
@@ -129,8 +185,10 @@ def parse_threshold_comparison(threshold_file):
             results['optimal_recall'] = extract_metric(optimal_section, 'recall')
             results['optimal_f1'] = extract_metric(optimal_section, 'f1')
 
-        # Extract improvement
-        improvement_match = re.search(r'Improvement: F1 ([+-][\d.]+)', content)
+        # Extract improvement - handle both old and new formats
+        # Old format: "Improvement: F1 +0.0711, Precision +0.1102, Recall +0.0154"
+        # New format: "Improvement over default (0.5):\n  F1: +0.0711\n  Precision: ..."
+        improvement_match = re.search(r'Improvement(?:\s+over\s+default[^:]*)?:\s*F1[:\s]+([+-][\d.]+)', content, re.IGNORECASE)
         if improvement_match:
             results['f1_improvement'] = float(improvement_match.group(1))
 
@@ -402,11 +460,12 @@ def main():
         print(f"Saved JSON results to: {json_output}")
 
 
-    print("*" * 80)
-    print("*" * 80)
-    print("Limited Results")
-    aggregated_df = aggregated_df_full[aggregated_df_full['n_seeds'] == 1]
-    report_stats(aggregated_df, args)
+    aggregated_df = aggregated_df_full[aggregated_df_full['n_seeds'] != 3]
+    if aggregated_df.size != 0:
+        print("*" * 80)
+        print("*" * 80)
+        print("Limited Results")
+        report_stats(aggregated_df, args)
 
 if __name__ == "__main__":
     main()
