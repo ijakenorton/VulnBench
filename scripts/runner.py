@@ -33,6 +33,7 @@ class ExperimentRunner:
         self.output_dir = self.project_root / "output"
         self.data_dir = self.project_root / "data"
         self.models_dir = self.project_root / "models"
+        self.logs_dir = self.project_root / "logs"
         self.code_dir = self.project_root / "Defect-detection" / "code"
         self.history_file = self.scripts_dir / "run_history.jsonl"
 
@@ -49,6 +50,7 @@ class ExperimentRunner:
         env["OUTPUT_DIR"] = str(self.output_dir)
         env["DATA_DIR"] = str(self.data_dir)
         env["MODELS_DIR"] = str(self.models_dir)
+        env["LOGS_DIR"] = str(self.logs_dir)
         env["CODE_DIR"] = str(self.code_dir)
 
         # Model config
@@ -67,18 +69,74 @@ class ExperimentRunner:
 
         return env
 
+    def _generate_experiment_canonical_name(self, dataset: DatasetConfig, experiment: ExperimentConfig,
+                                     seed: int, anonymized: bool = False) -> str:
+        """
+        Generate experiment directory name with automated hyperparameter tracking.
+
+        Format: {dataset}_{seed}_{suffix}_{hyperparam_changes}
+        Example: devign_seed123456_splits_pos2.0_lr5e-5
+        """
+        parts = []
+
+        # 1. Dataset name
+        parts.append(dataset.name)
+
+        # 2. Anonymized flag (CRITICAL for preventing mistakes)
+        if anonymized:
+            parts.append('anon')
+
+        # 3. Seed
+        parts.append(f"seed{seed}")
+
+        # 4. Output suffix (e.g., "splits")
+        if experiment.out_suffix:
+            parts.append(experiment.out_suffix)
+
+        # 5. Auto-detect non-default hyperparameters
+        # Define standard defaults for comparison
+
+        ARGS_DEFAULTS = {
+            "pos_weight": 1.0,
+            "epoch": 5,
+            "learning_rate": 2e-05,
+            "max_grad_norm": 1.0,
+            "dropout_probability": 0.2,
+            "loss_type": "bce",
+        }
+
+        ARGS_TRANSFORM = {
+            "pos_weight": "pos",
+            "epoch": "ep",
+            "learning_rate":"lr",
+            "max_grad_norm":"gnorm",
+            "dropout_probability":"drop",
+            "loss_type": "lt",
+        }
+
+        hyperparam_suffixes = []
+
+        for key in ARGS_DEFAULTS.keys():
+            if hasattr(experiment, key) and experiment[key] != ARGS_DEFAULTS[key]:
+                param = f"{ARGS_TRANSFORM[key]}_{experiment[key]}"
+                if key == "learning_rate":
+                        param = f"{ARGS_TRANSFORM[key]}{experiment[key]:.0e}"
+
+                hyperparam_suffixes.append(param)
+
+        # Add hyperparameter suffixes
+        parts.extend(hyperparam_suffixes)
+
+        return '_'.join(parts)
+
     def _build_python_command(self, model: ModelConfig, dataset: DatasetConfig,
                              experiment: ExperimentConfig, seed: int, model_config_name: str, anonymized: bool = False) -> List[str]:
         """Build the Python command to run."""
         # Use model_config_name (e.g., "codet5" or "codet5-full") to avoid collisions
         # when multiple configs share the same HuggingFace model
 
-        # Include pos_weight in directory name if it's not the default (1.0)
-        if experiment.pos_weight != 1.0:
-            dir_name = f"{dataset.name}_pos{experiment.pos_weight}_{experiment.out_suffix}_seed{seed}"
-        else:
-            dir_name = f"{dataset.name}_{experiment.out_suffix}_seed{seed}"
-
+        # Generate directory name with automated hyperparameter tracking
+        dir_name = self._generate_experiment_canonical_name(dataset, experiment, seed, anonymized)
         output_dir = self.models_dir / model_config_name / dir_name
 
         cmd = [
@@ -119,6 +177,10 @@ class ExperimentRunner:
             f"--seed={seed}",
         ])
 
+        # Add anonymized flag if applicable
+        if anonymized:
+            cmd.append("--anonymized")
+
         # Add loss function parameters
         cmd.extend([
             f"--loss_type={experiment.loss_type}",
@@ -142,7 +204,9 @@ class ExperimentRunner:
 
         # Wandb
         if experiment.use_wandb:
-            wandb_run_name = f"{model.model_type}_{dataset.name}_pos{experiment.pos_weight}_{experiment.out_suffix}"
+
+            canonical_name = self._generate_experiment_canonical_name(dataset, experiment, seed, anonymized)
+            wandb_run_name = f"{model.model_type}_{canonical_name}"
             cmd.extend([
                 "--use_wandb",
                 f"--wandb_project={experiment.wandb_project}",
@@ -153,23 +217,36 @@ class ExperimentRunner:
 
     def _build_sbatch_command(self, dataset: DatasetConfig, model_name: str,
                              experiment: ExperimentConfig, seed: int,
-                             legacy_mode: bool = False) -> List[str]:
+                             legacy_mode: bool = False, model: ModelConfig = None, anonymized: bool = False) -> List[str]:
         """Build the sbatch command."""
-        job_name = f"{dataset.name}_{experiment.out_suffix}_{seed}"
-        output_file = self.scripts_dir / f"{dataset.name}_out" / f"{job_name}_%j.out"
+
+        canonical_name = self._generate_experiment_canonical_name(dataset, experiment, seed, anonymized)
+        output_file = self.logs_dir / f"{dataset.name}_out" / f"{canonical_name}_%j.out"
 
         # Ensure output directory exists
         output_file.parent.mkdir(exist_ok=True)
 
-        sbatch_args = [
-            "sbatch",
-            "--gpus-per-node=1",
-            f"--partition={dataset.gpu}",
-            "--mem=64gb",
-            f"--job-name={job_name}",
-            f"--time={dataset.time_hours}:00:00",
-            f"--output={output_file}",
-        ]
+        # Gradient boosting uses CPU-only with high memory
+        if model and model.model_type == "gradient_boosting":
+            sbatch_args = [
+                "sbatch",
+                "--cpus-per-task=16",
+                "--partition=aoraki_bigmem",
+                "--mem=256gb",
+                f"--job-name={canonical_name}",
+                f"--time={dataset.time_hours}:00:00",
+                f"--output={output_file}",
+            ]
+        else:
+            sbatch_args = [
+                "sbatch",
+                "--gpus-per-node=1",
+                f"--partition={dataset.gpu}",
+                "--mem=128gb",
+                f"--job-name={canonical_name}",
+                f"--time={dataset.time_hours}:00:00",
+                f"--output={output_file}",
+            ]
 
         return sbatch_args
 
@@ -275,6 +352,7 @@ class ExperimentRunner:
 
         # Determine what to run
         if fix_missing:
+
             # Load models config for directory mapping
             from find_missing_experiments import load_config_files
             models_config, _ = load_config_files(self.config_dir)
@@ -340,7 +418,7 @@ class ExperimentRunner:
                     script_name = f"train_split.sh" if experiment.mode == "train" else "test_split.sh"
                     script_path = self.scripts_dir / script_name
 
-                    sbatch_cmd = self._build_sbatch_command(dataset, model_name, experiment, seed, legacy_mode=True)
+                    sbatch_cmd = self._build_sbatch_command(dataset, model_name, experiment, seed, legacy_mode=True, model=model, anonymized=anonymized)
                     sbatch_cmd.append(str(script_path))
 
                     if dry_run:
@@ -357,7 +435,7 @@ class ExperimentRunner:
                         print(result.stdout.strip())
                 else:
                     # Direct mode: use sbatch --wrap with Python command
-                    sbatch_cmd = self._build_sbatch_command(dataset, model_name, experiment, seed, legacy_mode=False)
+                    sbatch_cmd = self._build_sbatch_command(dataset, model_name, experiment, seed, legacy_mode=False, model=model, anonymized=anonymized)
                     wrap_cmd = self._build_sbatch_wrap_command(model, dataset, experiment, seed, model_name, anonymized)
 
                     sbatch_cmd.append("--wrap")
@@ -444,6 +522,8 @@ Examples:
                        help="List available models")
     parser.add_argument("--list-datasets", action="store_true",
                        help="List available datasets")
+    parser.add_argument("--list-experiments", action="store_true",
+                       help="List available datasets")
 
     args = parser.parse_args()
 
@@ -465,6 +545,14 @@ Examples:
             print(f"  {name}: {config.size}, {config.time_hours}h on {config.gpu}")
         print(f"\nDataset groups: small, big, all")
         return
+    if args.list_experiments:
+        p = Path(project_root / "scripts" / "config" / "experiments" )
+        files = [item.name for item in p.iterdir() if item.is_file()]
+        print("Available experiments:")
+        for file in files:
+            print("\t", file)
+        return
+
 
     if not args.experiment:
         parser.print_help()

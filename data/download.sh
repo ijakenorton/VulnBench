@@ -15,16 +15,18 @@ if ! command -v hf >/dev/null 2>&1; then
     fi
 fi
 
+host="ijakenorton"
+
 datasets=(
-    "ijakenorton/cvefixes_for_ml"
-    "ijakenorton/devign_for_ml"
-    "ijakenorton/diversevul_for_ml"
-    "ijakenorton/draper_for_ml"
-    "ijakenorton/icvul_for_ml"
-    "ijakenorton/juliet_for_ml"
-    "ijakenorton/mvdsc_mixed_for_ml"
-    "ijakenorton/reveal_for_ml"
-    "ijakenorton/vuldeepecker_for_ml"
+    "${host}/cvefixes_for_ml"
+    "${host}/devign_for_ml"
+    "${host}/diversevul_for_ml"
+    "${host}/draper_for_ml"
+    "${host}/icvul_for_ml"
+    "${host}/juliet_for_ml"
+    "${host}/mvdsc_mixed_for_ml"
+    "${host}/reveal_for_ml"
+    "${host}/vuldeepecker_for_ml"
 )
 
 for dataset in "${datasets[@]}"; do

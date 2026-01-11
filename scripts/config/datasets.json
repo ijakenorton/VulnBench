@@ -42,13 +42,6 @@
       "time_hours": 20,
       "gpu": "aoraki_gpu"
     },
-    "dedup-juliet": {
-      "name": "dedup-juliet",
-      "size": "small",
-      "time_hours": 20,
-      "gpu": "aoraki_gpu"
-    },
-
     "dedup-big-vul": {
       "name": "dedup-big-vul",
       "size": "small",
@@ -81,3 +74,4 @@
     }
   }
 }
+

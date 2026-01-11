@@ -83,7 +83,9 @@ def grid_search_threshold(logits: np.ndarray, labels: np.ndarray,
                          thresholds: np.ndarray = None,
                          optimization_metric: str = "f1",
                          min_recall: float = 0.0,
-                         precision_weight: float = 1.0) -> Tuple[float, Dict, List[Dict]]:
+                         precision_weight: float = 1.0,
+                         min_precision: float = 0.0,
+                         allow_accuracy_decrease: bool = True) -> Tuple[float, Dict, List[Dict]]:
     """
     Find optimal threshold using simple grid search.
 

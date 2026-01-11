@@ -111,6 +111,8 @@ MODEL_CLASSES = {
     "codet5_full": (T5Config, T5ForConditionalGeneration, RobertaTokenizer),
     #"natgen": (T5Config, T5EncoderModel, RobertaTokenizer),
     "natgen": (T5Config, T5ForConditionalGeneration, RobertaTokenizer),
+    # Gradient boosting uses same tokenizer but doesn't need pretrained model
+    "gradient_boosting": (RobertaConfig, RobertaForSequenceClassification, RobertaTokenizer),
 }
 
 
@@ -378,6 +380,7 @@ def train(args, train_dataset, model, tokenizer, tb_writer=None):
                 ):
                     if (
                         args.local_rank == -1 and args.evaluate_during_training
+                        and args.model_type != "gradient_boosting"  # Skip for GB - needs fitting first
                     ):
                         results = evaluate(args, model, tokenizer, eval_when_training=True)
 
@@ -439,9 +442,14 @@ def train(args, train_dataset, model, tokenizer, tb_writer=None):
                             )
 
                             # Save model weights
-                            model_path = os.path.join(checkpoint_dir, "model.bin")
-                            torch.save(model_to_save.state_dict(), model_path)
-                            logger.info("Saving model checkpoint to %s", model_path)
+                            if args.model_type == "gradient_boosting":
+                                # Gradient boosting uses pickle-based saving
+                                model_to_save.save_pretrained(checkpoint_dir)
+                                logger.info("Saving gradient boosting model to %s", checkpoint_dir)
+                            else:
+                                model_path = os.path.join(checkpoint_dir, "model.bin")
+                                torch.save(model_to_save.state_dict(), model_path)
+                                logger.info("Saving model checkpoint to %s", model_path)
 
                             # Save config.json
                             # Get config from the model (wrapped models store it as model.config)
@@ -499,6 +507,47 @@ def train(args, train_dataset, model, tokenizer, tb_writer=None):
                 if early_stopping_counter >= args.early_stopping_patience:
                     logger.info("Early stopping")
                     break  # Exit the epoch loop early
+
+        # Special handling for gradient boosting: fit the model after first epoch
+        # This matches TopScoreWrongExam methodology - encode data once, then fit
+        if args.model_type == "gradient_boosting" and idx == args.start_epoch:
+            logger.info("Fitting gradient boosting model on accumulated training data (epoch {})...".format(idx))
+            model_to_fit = model.module if hasattr(model, "module") else model
+            model_to_fit.fit_accumulated_data()
+            logger.info("Gradient boosting model fitted successfully!")
+
+            # Evaluate the fitted model
+            if args.local_rank in [-1, 0]:
+                results = evaluate(args, model, tokenizer, eval_when_training=True)
+                logger.info("Gradient Boosting Results after fitting: %s", results)
+
+                # Save the fitted model as best checkpoint
+                checkpoint_prefix = "checkpoint-best-acc"
+                checkpoint_dir = os.path.join(args.output_dir, checkpoint_prefix)
+                if not os.path.exists(checkpoint_dir):
+                    os.makedirs(checkpoint_dir)
+                model_to_save = model.module if hasattr(model, "module") else model
+                model_to_save.save_pretrained(checkpoint_dir)
+                logger.info("Saving gradient boosting model to %s", checkpoint_dir)
+
+                # Update best_acc if this is better
+                if results["eval_acc"] > best_acc:
+                    best_acc = results["eval_acc"]
+
+                # Log final results to wandb
+                if args.use_wandb:
+                    wandb.log({
+                        "final/accuracy": results["eval_acc"],
+                        "final/f1": results["eval_f1"],
+                        "final/precision": results["eval_precision"],
+                        "final/recall": results["eval_recall"],
+                        "final/epoch": idx
+                    }, step=global_wandb_step)
+
+            # For gradient boosting, break after first epoch since model is already fitted
+            logger.info("Gradient boosting training complete after first epoch. Exiting training loop.")
+            break
+
 
 # END OF EPOCH LOOP
 def evaluate(args, model, tokenizer, eval_when_training=False):
@@ -1014,12 +1063,60 @@ def copy_split_metadata_to_output(args):
     with open(source_metadata, 'r') as f:
         metadata = json.load(f)
     
+    # Extract clean dataset name from data file path
+    # e.g., "../data/devign/devign_full_dataset.jsonl" -> "devign"
+    data_file_path = args.train_data_file if hasattr(args, 'train_data_file') else args.one_data_file
+    dataset_name = os.path.basename(os.path.dirname(data_file_path))
+
+    # Detect if dataset is anonymized from file path or flag
+    is_anonymized = getattr(args, 'anonymized', False) or 'anonymized' in data_file_path.lower()
+
+    # Define standard defaults for comparison
+    DEFAULTS = {
+        'pos_weight': 1.0,
+        'learning_rate': 2e-5,
+        'dropout_probability': 0.1,
+        'epoch': 5,
+        'batch_size': 16,
+        'block_size': 400,
+    }
+
+    # Collect all hyperparameters
+    hyperparameters = {
+        "learning_rate": args.learning_rate,
+        "train_batch_size": args.train_batch_size,
+        "eval_batch_size": args.eval_batch_size,
+        "epochs": args.epoch,
+        "pos_weight": args.pos_weight,
+        "dropout_probability": args.dropout_probability,
+        "block_size": args.block_size,
+        "max_grad_norm": args.max_grad_norm,
+        "loss_type": args.loss_type,
+    }
+
+    # Identify non-default hyperparameters
+    non_default_hyperparams = {}
+    if args.pos_weight != DEFAULTS['pos_weight']:
+        non_default_hyperparams['pos_weight'] = args.pos_weight
+    if args.learning_rate != DEFAULTS['learning_rate']:
+        non_default_hyperparams['learning_rate'] = args.learning_rate
+    if args.dropout_probability != DEFAULTS['dropout_probability']:
+        non_default_hyperparams['dropout_probability'] = args.dropout_probability
+    if args.epoch != DEFAULTS['epoch']:
+        non_default_hyperparams['epochs'] = args.epoch
+
     # Add experiment-specific information
     metadata.update({
         "experiment_output_dir": args.output_dir,
         "model_type": args.model_type,
         "model_name": args.model_name_or_path,
+        "dataset_name": dataset_name,  # Clean dataset name (e.g., "devign")
+        "anonymized": is_anonymized,  # CRITICAL: Track anonymized datasets
+        "output_suffix": getattr(args, 'output_suffix', 'splits'),  # From experiment config
         "copied_at": datetime.now().isoformat(),
+        "hyperparameters": hyperparameters,  # All hyperparameters
+        "non_default_hyperparameters": non_default_hyperparams,  # Only non-default values
+        # Legacy field for backwards compatibility
         "training_args": {
             "learning_rate": args.learning_rate,
             "batch_size": args.train_batch_size,
@@ -1179,6 +1276,12 @@ def main():
         default=None,
         type=str,
         help="Automate splitting of data based on seed",
+    )
+
+    parser.add_argument(
+        "--anonymized",
+        action="store_true",
+        help="Flag indicating if the dataset is anonymized (for tracking purposes)",
     )
 
     parser.add_argument(
@@ -1419,6 +1522,20 @@ def main():
              "Example: pos_weight=0.4 trains model to reduce false positives."
     )
 
+    # Gradient boosting args
+    parser.add_argument(
+        "--gb_learning_rate", default=0.3, type=float, help="Learning rate for gradient boosting"
+    )
+    parser.add_argument(
+        "--gb_max_depth", default=10, type=int, help="Max depth for gradient boosting trees"
+    )
+    parser.add_argument(
+        "--gb_max_iter", default=200, type=int, help="Max iterations for gradient boosting"
+    )
+    parser.add_argument(
+        "--gb_min_samples_leaf", default=20, type=int, help="Min samples per leaf for gradient boosting"
+    )
+
     # Loss function selection
     parser.add_argument(
         "--loss_type",
@@ -1545,7 +1662,12 @@ def main():
         ptvsd.wait_for_attach()
 
     # Setup CUDA, GPU & distributed training
-    if args.local_rank == -1 or args.no_cuda:
+    # Gradient boosting always uses CPU
+    if args.model_type == "gradient_boosting":
+        device = torch.device("cpu")
+        args.n_gpu = 1  # Set to 1 for batch size calculations
+        args.no_cuda = True
+    elif args.local_rank == -1 or args.no_cuda:
         device = torch.device(
             "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu"
         )
@@ -1556,6 +1678,10 @@ def main():
         torch.distributed.init_process_group(backend="nccl")
         args.n_gpu = 1
     args.device = device
+
+    # Handle per-GPU batch size calculation (avoid division by zero)
+    if args.n_gpu == 0:
+        args.n_gpu = 1
     args.per_gpu_train_batch_size = args.train_batch_size // args.n_gpu
     args.per_gpu_eval_batch_size = args.eval_batch_size // args.n_gpu
     # Setup logging
@@ -1648,6 +1774,10 @@ def main():
         # Use LineVul model with 2-class classifier
         from model import LineVulModel
         model = LineVulModel(model, config, tokenizer, args)
+    elif args.model_type == "gradient_boosting":
+        # Use Gradient Boosting model (bag-of-words + sklearn)
+        from gradient_boosting_model import GradientBoostingModel
+        model = GradientBoostingModel(model, config, tokenizer, args)
     else:
         model = Model(model, config, tokenizer, args)
 
@@ -1748,14 +1878,23 @@ def main():
     # Evaluation
     results = {}
     if args.do_eval and args.local_rank in [-1, 0]:
-        checkpoint_prefix = "checkpoint-best-acc/model.bin"
-        output_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
+        if args.model_type == "gradient_boosting":
+            # Gradient boosting loads from directory, not .bin file
+            checkpoint_dir = os.path.join(args.output_dir, "checkpoint-best-acc")
+            output_dir = checkpoint_dir
+        else:
+            checkpoint_prefix = "checkpoint-best-acc/model.bin"
+            output_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
 
         # Load checkpoint or validate pretrained-only usage
         if os.path.exists(output_dir):
             logger.info(f"Loading checkpoint from {output_dir}")
-            model.load_state_dict(torch.load(output_dir))
-            model.to(args.device)
+            if args.model_type == "gradient_boosting":
+                model_to_load = model.module if hasattr(model, "module") else model
+                model_to_load.load_pretrained(output_dir)
+            else:
+                model.load_state_dict(torch.load(output_dir))
+                model.to(args.device)
         else:
             # Checkpoint not found - determine if this is expected
             if args.do_train:
@@ -1783,14 +1922,23 @@ def main():
                 tb_writer.add_scalar(f"final_eval/{key}", value, 0)
 
     if args.do_test and args.local_rank in [-1, 0]:
-        checkpoint_prefix = "checkpoint-best-acc/model.bin"
-        output_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
+        if args.model_type == "gradient_boosting":
+            # Gradient boosting loads from directory, not .bin file
+            checkpoint_dir = os.path.join(args.output_dir, "checkpoint-best-acc")
+            output_dir = checkpoint_dir
+        else:
+            checkpoint_prefix = "checkpoint-best-acc/model.bin"
+            output_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
 
         # Load checkpoint or validate pretrained-only usage
         if os.path.exists(output_dir):
             logger.info(f"Loading checkpoint from {output_dir}")
-            model.load_state_dict(torch.load(output_dir))
-            model.to(args.device)
+            if args.model_type == "gradient_boosting":
+                model_to_load = model.module if hasattr(model, "module") else model
+                model_to_load.load_pretrained(output_dir)
+            else:
+                model.load_state_dict(torch.load(output_dir))
+                model.to(args.device)
         else:
             # Checkpoint not found - determine if this is expected
             if args.do_train:

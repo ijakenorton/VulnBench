@@ -74,7 +74,7 @@ def generate_train_all_config(
         models_config: Models configuration dict
         datasets_config: Datasets configuration dict
         dataset_group: If specified, only include datasets from this group (e.g., "small", "big", "all")
-        seeds: List of seeds to use. Defaults to [123456, 234567, 345678]
+        seeds: List of seeds to use. Defaults to [123456, 789012, 345678]
         epoch: Number of epochs
         pos_weight: Positive class weight
         mode: "train" or "test"
@@ -111,7 +111,7 @@ def generate_train_all_config(
         "seeds": seeds,
         "pos_weight": pos_weight,
         "epoch": epoch,
-        "out_suffix": "splits",
+        "out_suffix": "",
         "mode": mode,
         "block_size": 400,
         "train_batch_size": 16,

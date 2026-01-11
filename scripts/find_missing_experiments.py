@@ -15,6 +15,8 @@ Usage:
 
 import argparse
 import json
+import re
+from utils import parse_legacy_dirname, validate_metadata_consistency, parse_threshold_json
 from pathlib import Path
 from typing import Set, Tuple, List, Dict
 from collections import defaultdict
@@ -107,6 +109,7 @@ def load_experiment_config(config_file: Path, config_dir: Path) -> Dict:
     return config
 
 
+
 def get_expected_experiments(exp_config: Dict) -> Set[Tuple[str, str, int]]:
     """Get set of expected (model, dataset, seed) tuples."""
     expected = set()
@@ -118,14 +121,103 @@ def get_expected_experiments(exp_config: Dict) -> Set[Tuple[str, str, int]]:
 
     return expected
 
+def extract_missing_results(results_dir, models_config):
+    """
+    Extract results from all experiment directories
 
-def get_actual_experiments(results_dir: Path, models_config: Dict, out_suffix: str = "splits") -> Set[Tuple[str, str, int]]:
+    Now uses metadata files (data_split_info.json) instead of parsing directory names.
+    This makes the extraction more robust and handles anonymized datasets correctly.
+
+    Expected structure:
+    models/
+    ├── codebert/
+    │   ├── diversevul_seed123_splits/
+    │   │   ├── experiment_summary.txt
+    │   │   ├── threshold_comparison.txt
+    │   │   ├── predictions.txt
+    │   │   └── data_split_info.json  # Metadata file
+    │   ├── diversevul_seed456_splits/
+    │   └── icvul_anon_seed123_splits/  # Anonymized dataset
+    ├── natgen/
+    └── ...
+    """
+    all_results = []
+    missing_results = []
+    validation_warnings = []
+
+    for model_dir in Path(results_dir).iterdir():
+        if not model_dir.is_dir():
+            continue
+        if model_dir.name not in  models_config["models"]:
+            continue
+
+        model_name = model_dir.name
+
+        for exp_dir in model_dir.iterdir():
+            if not exp_dir.is_dir():
+                continue
+
+            exp_name = exp_dir.name
+            metadata_file = exp_dir / "data_split_info.json"
+
+            if metadata_file.exists():
+                try:
+                    with open(metadata_file, 'r') as f:
+                        metadata = json.load(f)
+
+                    dataset = metadata.get('dataset_name', 'unknown')
+    
+                    seed = metadata.get('seed', 0)
+                    anonymized = metadata.get('anonymized', False)
+
+                    if seed is None:
+                        seed = metadata.get('seed')
+
+                    hyperparams = metadata.get('hyperparameters', {})
+                    pos_weight = hyperparams.get('pos_weight', 1.0)
+                    learning_rate = hyperparams.get('learning_rate', 2e-5)
+                    dropout = hyperparams.get('dropout_probability', 0.1)
+                    epochs = hyperparams.get('epochs', 5)
+
+                except Exception as e:
+                    print(f"  ✗ {exp_name}: Error reading metadata: {e}")
+            else:
+                print(f"  ℹ {exp_name}: No metadata file")
+                continue
+
+            # Look for results files - prefer JSON, fallback to txt
+            threshold_json = exp_dir / "threshold_results.json"
+            threshold_txt = exp_dir / "threshold_comparison.txt"
+            summary_file = exp_dir / "experiment_summary.txt"
+
+            if threshold_json.exists():
+                results = parse_threshold_json(threshold_json)
+
+            if  results:
+                results.update({
+                    'model': model_name,
+                    'dataset': dataset,
+                    'seed': seed,
+                    'pos_weight': pos_weight,
+                    'anonymized': anonymized,
+                    'exp_dir': str(exp_dir)
+                })
+                all_results.append(results)
+            else:
+                missing = {
+                    'dir': str(exp_dir),
+                    'name': exp_name,
+                    'seed': seed,
+                    'dataset': dataset,
+                    'model_name': model_name,
+                    'anonymized': anonymized
+                }
+                missing_results.append(missing)
+
+    return all_results, missing_results
+
+def get_actual_experiments(results_dir: Path, models_config: Dict, out_suffix: str = "") -> Set[Tuple[str, str, int]]:
     """Scan results directory to find actual experiments run.
-
-    Handles both legacy and new directory naming:
-    - Legacy: directory named after HuggingFace model (e.g., "codebert-base")
-    - New: directory named after config name (e.g., "codebert")
-
     Args:
         results_dir: Directory containing model subdirectories
         models_config: Models configuration to map legacy names
@@ -136,65 +228,9 @@ def get_actual_experiments(results_dir: Path, models_config: Dict, out_suffix: s
     if not results_dir.exists():
         print(f"Warning: Results directory not found: {results_dir}")
         return actual
-
-    # Create mapping: legacy_dir_name -> config_name
-    # e.g., "codebert-base" -> "codebert", "codet5-base" -> "codet5"
-    legacy_to_config = {}
-    for config_name, config in models_config["models"].items():
-        legacy_dir = config["model_name"].split("/")[-1]
-        if legacy_dir != config_name:
-            legacy_to_config[legacy_dir] = config_name
-
-    for model_dir in results_dir.iterdir():
-        if not model_dir.is_dir():
-            continue
-
-        dir_name = model_dir.name
-
-        # Determine model config name
-        # First check if it's a legacy directory name
-        if dir_name in legacy_to_config:
-            model_name = legacy_to_config[dir_name]
-        else:
-            # Assume it's already the config name
-            model_name = dir_name
-
-        for exp_dir in model_dir.iterdir():
-            if not exp_dir.is_dir():
-                continue
-
-            exp_name = exp_dir.name
-
-            # Parse experiment directory name: "dataset_splits_seed123456"
-            if '_seed' in exp_name:
-                parts = exp_name.split('_seed')
-                dataset_part = parts[0]
-                try:
-                    seed = int(parts[1])
-                except ValueError:
-                    continue
-
-                # Remove out_suffix if present (e.g., "cvefixes_splits" -> "cvefixes")
-                if out_suffix and dataset_part.endswith(f'_{out_suffix}'):
-                    dataset = dataset_part[:-len(f'_{out_suffix}')]
-                # Handle pos_weight in name
-                elif '_pos' in dataset_part:
-                    dataset = dataset_part.split('_pos')[0]
-                else:
-                    dataset = dataset_part
-
-                # Check if experiment is complete (both checkpoint and threshold results exist)
-                checkpoint = exp_dir / "checkpoint-best-acc" / "model.bin"
-                threshold_json = exp_dir / "threshold_results.json"
-                threshold_txt = exp_dir / "threshold_comparison.txt"
-
-                # Experiment is complete if checkpoint exists AND threshold results exist
-                has_checkpoint = checkpoint.exists()
-                has_threshold = threshold_json.exists() or threshold_txt.exists()
-
-                if has_checkpoint and has_threshold:
-                    actual.add((model_name, dataset, seed))
-
+    all_results, missing_results = extract_missing_results(results_dir, models_config)
+    for existing in all_results:
+        actual.add((existing["model"], existing["dataset"], existing["seed"]))
     return actual
 
 

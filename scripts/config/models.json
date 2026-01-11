@@ -29,6 +29,11 @@
       "model_name": "../models/pretrained/linevul",
       "tokenizer_name": "microsoft/codebert-base",
       "model_type": "linevul"
+    },
+    "gradient_boosting": {
+      "model_name": "microsoft/codebert-base",
+      "tokenizer_name": "microsoft/codebert-base",
+      "model_type": "gradient_boosting"
     }
   }
 }

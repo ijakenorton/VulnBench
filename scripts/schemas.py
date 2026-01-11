@@ -31,7 +31,7 @@ class ExperimentConfig:
     seeds: List[int]
     pos_weight: float = 1.0
     epoch: int = 5
-    out_suffix: str = "splits"
+    out_suffix: str = ""
     mode: Literal["train", "test"] = "train"
     block_size: int = 400
     train_batch_size: int = 16
@@ -46,12 +46,14 @@ class ExperimentConfig:
     cb_beta: float = 0.9999
     focal_gamma: float = 2.0
     # Threshold optimization (inference time - separate from pos_weight which affects training)
-    threshold_method: Literal["grid_search", "ghost", "both"] = "grid_search"
+    threshold_method: Literal["grid_search", "ghost", "both"] = "both"
     threshold_metric: Literal["f1", "precision", "kappa", "mcc"] = "f1"
     min_recall: float = 0.5
     threshold_precision_weight: float = 2.0
     ghost_n_subsets: int = 100
     ghost_subset_size: float = 0.8
+    def __getitem__(self, item):
+        return getattr(self, item)
 
 
 class ConfigLoader:
