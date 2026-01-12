@@ -41,6 +41,7 @@ class ExperimentConfig:
     dropout_probability: float = 0.2
     use_wandb: bool = True
     wandb_project: str = "vulnerability-benchmark"
+    use_original_splits: bool = False
     # Loss function configuration
     loss_type: Literal["bce", "cb_focal"] = "bce"
     cb_beta: float = 0.9999

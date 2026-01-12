@@ -153,16 +153,27 @@ class ExperimentRunner:
         else:
             cmd.append("--do_test")
 
-        dataset_suffix = "full_dataset.jsonl" 
+        dataset_suffix = "full_dataset.jsonl"
 
         if anonymized:
-            dataset_suffix = "full_dataset_anonymized.jsonl" 
-        
+            dataset_suffix = "full_dataset_anonymized.jsonl"
 
-        # Add dataset
-        data_file = self.data_dir / dataset.name / f"{dataset.name}_{dataset_suffix}"
+        # Add dataset - either use original splits or generate from one_data_file
+        if experiment.use_original_splits:
+            # Use original train/val/test splits directly
+            train_file = self.data_dir / dataset.name / f"{dataset.name}_train.jsonl"
+            val_file = self.data_dir / dataset.name / f"{dataset.name}_val.jsonl"
+            test_file = self.data_dir / dataset.name / f"{dataset.name}_test.jsonl"
 
-        cmd.append(f"--one_data_file={data_file}")
+            cmd.extend([
+                f"--train_data_file={train_file}",
+                f"--eval_data_file={val_file}",
+                f"--test_data_file={test_file}",
+            ])
+        else:
+            # Use one_data_file format (will be split by seed)
+            data_file = self.data_dir / dataset.name / f"{dataset.name}_{dataset_suffix}"
+            cmd.append(f"--one_data_file={data_file}")
 
         # Add hyperparameters
         cmd.extend([
