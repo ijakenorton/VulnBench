@@ -1,0 +1,13 @@
+{
+  "models": ["linevul", "natgen"],
+  "datasets": ["icvul", "diversevul", "primevul"],
+  "seeds": [123456],
+  "pos_weight": 1.0,
+  "epoch": 5,
+  "out_suffix": "pretrained_inference",
+  "mode": "test",
+  "use_wandb": false,
+  "threshold_metric": "precision",
+  "min_recall": 0.5,
+  "threshold_precision_weight": 2.0
+}

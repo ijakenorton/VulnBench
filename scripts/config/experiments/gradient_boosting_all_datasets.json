@@ -1,0 +1,39 @@
+{
+  "_metadata": {
+    "description": "Gradient boosting on all datasets for spurious correlation detection",
+    "created": "2025-12-10",
+    "purpose": "Test if all datasets contain spurious correlations exploitable with bag-of-words + gradient boosting"
+  },
+  "models": ["gradient_boosting"],
+  "datasets": [
+    "icvul",
+    "mvdsc_mixed",
+    "devign",
+    "dedup-devign",
+    "vuldeepecker",
+    "cvefixes",
+    "juliet",
+    "dedup-big-vul",
+    "reveal",
+    "diversevul",
+    "draper",
+    "primevul"
+  ],
+  "seeds": [
+    123456,
+    789012,
+    345678
+  ],
+  "pos_weight": 1.0,
+  "epoch": 1,
+  "out_suffix": "",
+  "mode": "train",
+  "block_size": 400,
+  "train_batch_size": 32,
+  "eval_batch_size": 32,
+  "learning_rate": 0.3,
+  "max_grad_norm": 1.0,
+  "dropout_probability": 0.0,
+  "use_wandb": true,
+  "wandb_project": "vulnerability-benchmark"
+}

@@ -1,0 +1,20 @@
+{
+  "models": [
+    "codebert",
+    "graphcodebert",
+    "codet5",
+    "codet5-full",
+    "natgen",
+    "linevul",
+    "gradient_boosting"
+  ],
+  "datasets": ["primevul"],
+  "seeds": [123456],
+  "pos_weight": 1.0,
+  "epoch": 5,
+  "out_suffix": "original_splits",
+  "mode": "train",
+  "use_original_splits": true,
+  "use_wandb": true,
+  "wandb_project": "vulnerability-benchmark"
+}

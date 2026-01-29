@@ -281,10 +281,8 @@ class ExperimentRunner:
     def _build_sbatch_command(
         self,
         dataset: DatasetConfig,
-        model_name: str,
         experiment: ExperimentConfig,
         seed: int,
-        legacy_mode: bool = False,
         model: ModelConfig = None,
         anonymized: bool = False,
     ) -> List[str]:
@@ -499,7 +497,7 @@ class ExperimentRunner:
             print(f"Execution mode: local")
 
         if dry_run:
-            print("\n=== DRY RUN MODE ===\n")
+            print("\n#=== DRY RUN MODE ===\n")
 
         # Execute jobs
         job_count = 0
@@ -511,92 +509,42 @@ class ExperimentRunner:
 
             if use_sbatch:
 
-                if legacy_mode:
-                    # Legacy mode: use bash scripts with env vars
-                    env = self._setup_env(model, dataset, experiment, seed)
-                    script_name = (
-                        f"train_split.sh"
-                        if experiment.mode == "train"
-                        else "test_split.sh"
-                    )
-                    script_path = self.scripts_dir / script_name
+                # Direct mode: use sbatch --wrap with Python command
+                sbatch_cmd = self._build_sbatch_command(
+                    dataset,
+                    experiment,
+                    seed,
+                    model=model,
+                    anonymized=anonymized,
+                )
+                wrap_cmd = self._build_sbatch_wrap_command(
+                    model, dataset, experiment, seed, model_name, anonymized
+                )
 
-                    sbatch_cmd = self._build_sbatch_command(
-                        dataset,
-                        model_name,
-                        experiment,
-                        seed,
-                        legacy_mode=True,
-                        model=model,
-                        anonymized=anonymized,
-                    )
-                    sbatch_cmd.append(str(script_path))
+                sbatch_cmd.append("--wrap")
+                sbatch_cmd.append(wrap_cmd)
 
-                    if dry_run:
-                        print(
-                            f"Job {job_count}: {model_name} × {dataset_name} × seed={seed}"
-                        )
-                        print(f"  Command: {' '.join(sbatch_cmd)}")
-                        print(f"  Script: {script_path}")
-                        print(
-                            f"  Env vars: model_name={model.model_name}, dataset_name={dataset_name}, seed={seed}"
-                        )
-                        print()
-                    else:
-                        result = subprocess.run(
-                            sbatch_cmd,
-                            env=env,
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                        )
-                        # Extract job ID from "Submitted batch job 123456"
-                        job_id = (
-                            result.stdout.strip().split()[-1]
-                            if result.stdout
-                            else "unknown"
-                        )
-                        job_ids.append(job_id)
-                        print(result.stdout.strip())
+                if dry_run:
+                    print(
+                        f"#Job {job_count}: {model_name} × {dataset_name} × seed={seed}"
+                    )
+                    print(
+                        f"{' '.join(sbatch_cmd[:-2])}", file=sys.stderr
+                    )  # Print sbatch args
+                    print(f"  --wrap: {wrap_cmd}", file=sys.stderr)
+                    print()
                 else:
-                    # Direct mode: use sbatch --wrap with Python command
-                    sbatch_cmd = self._build_sbatch_command(
-                        dataset,
-                        model_name,
-                        experiment,
-                        seed,
-                        legacy_mode=False,
-                        model=model,
-                        anonymized=anonymized,
+                    result = subprocess.run(
+                        sbatch_cmd, check=True, capture_output=True, text=True
                     )
-                    wrap_cmd = self._build_sbatch_wrap_command(
-                        model, dataset, experiment, seed, model_name, anonymized
+                    # Extract job ID from "Submitted batch job 123456"
+                    job_id = (
+                        result.stdout.strip().split()[-1]
+                        if result.stdout
+                        else "unknown"
                     )
-
-                    sbatch_cmd.append("--wrap")
-                    sbatch_cmd.append(wrap_cmd)
-
-                    if dry_run:
-                        print(
-                            f"Job {job_count}: {model_name} × {dataset_name} × seed={seed}"
-                        )
-                        print(
-                            f"  sbatch: {' '.join(sbatch_cmd[:-2])}"
-                        )  # Print sbatch args
-                        print(f"  --wrap: {wrap_cmd}")
-                        print()
-                    else:
-                        result = subprocess.run(
-                            sbatch_cmd, check=True, capture_output=True, text=True
-                        )
-                        # Extract job ID from "Submitted batch job 123456"
-                        job_id = (
-                            result.stdout.strip().split()[-1]
-                            if result.stdout
-                            else "unknown"
-                        )
-                        job_ids.append(job_id)
-                        print(result.stdout.strip())
+                    job_ids.append(job_id)
+                    print(result.stdout.strip())
             else:
                 # Run directly with Python (no sbatch)
                 env = self._setup_env(model, dataset, experiment, seed)
@@ -606,9 +554,9 @@ class ExperimentRunner:
 
                 if dry_run:
                     print(
-                        f"Job {job_count}: {model_name} × {dataset_name} × seed={seed}"
+                        f"#Job {job_count}: {model_name} × {dataset_name} × seed={seed}"
                     )
-                    print(f"  Command: {' '.join(python_cmd)}")
+                    print(f"#  Command: {' '.join(python_cmd)}")
                     print()
                 else:
                     # Activate conda environment and run
@@ -617,7 +565,7 @@ class ExperimentRunner:
                     subprocess.run(full_cmd, shell=True, env=env, check=True)
 
         if not dry_run:
-            print(f"Submitted {job_count} job(s)")
+            print(f"#Submitted {job_count} job(s)")
 
             # Log run history
             if experiment_file:
@@ -631,7 +579,27 @@ class ExperimentRunner:
                     dry_run,
                 )
         else:
-            print(f"=== Would submit {job_count} job(s) ===")
+            print(f"#=== Would submit {job_count} job(s) ===")
+
+
+def init_experiment_path(path):
+    if not path:
+        parser.print_help()
+        sys.exit(1)
+
+    experiment_file = Path(path)
+    if not experiment_file.exists():
+        project_root = find_project_root()
+        # Try relative to config/experiments
+        experiment_file = project_root / "scripts" / "config" / "experiments" / path
+        if not experiment_file.suffix == ".json":
+            experiment_file = experiment_file.with_suffix(".json")
+
+    if not experiment_file.exists():
+        print(f"Error: Experiment file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+
+    return experiment_file
 
 
 def find_project_root() -> Path:
@@ -645,7 +613,11 @@ def find_project_root() -> Path:
     return Path(result.stdout.strip())
 
 
+parser = None
+
+
 def main():
+    global parser
     parser = argparse.ArgumentParser(
         description="Run vulnerability detection experiments",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -712,38 +684,42 @@ Examples:
 
     if args.list_datasets:
         datasets = runner.config_loader.load_datasets()
+        hardware = runner.config_loader.load_hardware()
         print("Available datasets:")
         for name, config in datasets.items():
-            print(f"  {name}: {config.size}, {config.time_hours}h on {config.gpu}")
+            print(
+                f"  {name}: {config.size}, {config.time_hours}h on {hardware[config.size]}"
+            )
         print(f"\nDataset groups: small, big, all")
         return
     if args.list_experiments:
         p = Path(project_root / "scripts" / "config" / "experiments")
         files = [item.name for item in p.iterdir() if item.is_file()]
         print("Available experiments:")
+        counter = 0
         for file in files:
-            print("\t", file)
-        return
+            print("\t", counter, file)
+            counter += 1
+        counter = counter - 1
+        choice = input("Enter choice here:")
+        try:
+            choice = int(choice)
+            if choice < 0 or choice > counter:
+                print("invalid choice, must be in range from 0 to", counter)
 
-    if not args.experiment:
-        parser.print_help()
-        sys.exit(1)
+            args.experiment = files[choice]
+        except ValueError:
+            print(
+                "invalid choice expected integer in range 0 to",
+                counter,
+                "you provided:",
+                choice,
+            )
+            return 1
 
-    # Load and run experiment
-    experiment_file = Path(args.experiment)
-    if not experiment_file.exists():
-        # Try relative to config/experiments
-        experiment_file = (
-            project_root / "scripts" / "config" / "experiments" / args.experiment
-        )
-        if not experiment_file.suffix == ".json":
-            experiment_file = experiment_file.with_suffix(".json")
-
-    if not experiment_file.exists():
-        print(f"Error: Experiment file not found: {args.experiment}", file=sys.stderr)
-        sys.exit(1)
-
+    experiment_file = init_experiment_path(args.experiment)
     experiment = runner.config_loader.load_experiment(experiment_file)
+
     runner.run_experiment(
         experiment,
         use_sbatch=not args.no_sbatch,
