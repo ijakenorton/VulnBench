@@ -139,6 +139,18 @@ class ExperimentRunner:
         dir_name = self._generate_experiment_canonical_name(dataset, experiment, seed, anonymized)
         output_dir = self.models_dir / model_config_name / dir_name
 
+        # For cross-dataset testing, use source model directory if specified
+        if experiment.source_model_dir:
+            # Replace {seed} placeholder in source_model_dir pattern
+            source_dir_pattern = experiment.source_model_dir.replace("{seed}", str(seed))
+            source_model_path = self.models_dir / model_config_name / source_dir_pattern
+
+            # Override output_dir to point to source model for checkpoint loading
+            # But we'll use a special flag to save results to the correct location
+            checkpoint_dir = source_model_path
+        else:
+            checkpoint_dir = output_dir
+
         cmd = [
             "python", str(self.code_dir / "run.py"),
             f"--output_dir={output_dir}",
@@ -146,6 +158,10 @@ class ExperimentRunner:
             f"--tokenizer_name={model.tokenizer_name}",
             f"--model_name_or_path={model.model_name}",
         ]
+
+        # Add source checkpoint directory if doing cross-dataset testing
+        if experiment.source_model_dir:
+            cmd.append(f"--source_checkpoint_dir={checkpoint_dir}")
 
         # Add mode flags
         if experiment.mode == "train":

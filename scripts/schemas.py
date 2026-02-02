@@ -42,6 +42,9 @@ class ExperimentConfig:
     use_wandb: bool = True
     wandb_project: str = "vulnerability-benchmark"
     use_original_splits: bool = False
+    # Cross-dataset testing: specify source model directory pattern
+    # e.g., "primevul_seed{seed}" to test PrimeVul-trained model on other datasets
+    source_model_dir: Optional[str] = None
     # Loss function configuration
     loss_type: Literal["bce", "cb_focal"] = "bce"
     cb_beta: float = 0.9999

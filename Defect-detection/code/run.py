@@ -1292,6 +1292,13 @@ def main():
         help="The output directory where the model predictions and checkpoints will be written.",
     )
 
+    parser.add_argument(
+        "--source_checkpoint_dir",
+        default=None,
+        type=str,
+        help="Directory containing source checkpoint for cross-dataset testing (if different from output_dir)",
+    )
+
     ## Other parameters
 
     parser.add_argument(
@@ -1878,13 +1885,16 @@ def main():
     # Evaluation
     results = {}
     if args.do_eval and args.local_rank in [-1, 0]:
+        # Use source_checkpoint_dir for cross-dataset testing if provided
+        checkpoint_base_dir = args.source_checkpoint_dir if args.source_checkpoint_dir else args.output_dir
+
         if args.model_type == "gradient_boosting":
             # Gradient boosting loads from directory, not .bin file
-            checkpoint_dir = os.path.join(args.output_dir, "checkpoint-best-acc")
+            checkpoint_dir = os.path.join(checkpoint_base_dir, "checkpoint-best-acc")
             output_dir = checkpoint_dir
         else:
             checkpoint_prefix = "checkpoint-best-acc/model.bin"
-            output_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
+            output_dir = os.path.join(checkpoint_base_dir, "{}".format(checkpoint_prefix))
 
         # Load checkpoint or validate pretrained-only usage
         if os.path.exists(output_dir):
@@ -1922,13 +1932,16 @@ def main():
                 tb_writer.add_scalar(f"final_eval/{key}", value, 0)
 
     if args.do_test and args.local_rank in [-1, 0]:
+        # Use source_checkpoint_dir for cross-dataset testing if provided
+        checkpoint_base_dir = args.source_checkpoint_dir if args.source_checkpoint_dir else args.output_dir
+
         if args.model_type == "gradient_boosting":
             # Gradient boosting loads from directory, not .bin file
-            checkpoint_dir = os.path.join(args.output_dir, "checkpoint-best-acc")
+            checkpoint_dir = os.path.join(checkpoint_base_dir, "checkpoint-best-acc")
             output_dir = checkpoint_dir
         else:
             checkpoint_prefix = "checkpoint-best-acc/model.bin"
-            output_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
+            output_dir = os.path.join(checkpoint_base_dir, "{}".format(checkpoint_prefix))
 
         # Load checkpoint or validate pretrained-only usage
         if os.path.exists(output_dir):

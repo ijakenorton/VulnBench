@@ -3,3 +3,4 @@ old/
 csvs/
 *.md
 train.log
+__pycache__

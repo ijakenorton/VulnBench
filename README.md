@@ -111,6 +111,12 @@ This framework is now pretty mature and includes:
 └── Defect-detection/      # Core training/inference code
 ```
 
+## Documentation
+
+- **[Runner.py Guide](scripts/RUNNER_README.md)** - Comprehensive guide to the experiment runner
+- **[Analysis Pipeline](scripts/ANALYSIS_README.md)** - Data analysis and visualization tools
+- **[GNN Integration](scripts/GNN_INTEGRATION_README.md)** - Graph Neural Network experiments
+
 ## Advanced Usage
 
 ### Configuration System
@@ -122,6 +128,8 @@ The framework uses a centralized JSON-based configuration system:
 - **`config/experiments/*.json`** - Experiment definitions (model/dataset/seed combinations)
 
 Datasets are automatically grouped by size (small/big) based on their `size` field, eliminating manual group management.
+
+For detailed configuration options and advanced features (cross-dataset testing, original splits, hyperparameter tracking), see [scripts/RUNNER_README.md](scripts/RUNNER_README.md).
 
 ### Custom Experiments
 
