@@ -15,7 +15,6 @@ Usage:
 
 import argparse
 import json
-import re
 from utils import (
     parse_threshold_json,
 )
@@ -24,47 +23,23 @@ from typing import Set, Tuple, List, Dict
 from collections import defaultdict
 
 
-def load_config_files(config_dir: Path) -> Tuple[Dict, Dict, Dict]:
-    """Load models and datasets config files."""
-    models_file = config_dir / "models.json"
-    datasets_file = config_dir / "datasets.json"
-    hardware_file = config_dir / "hardware.json"
+# def _generate_dataset_groups(datasets: Dict) -> Dict:
+#     """Auto-generate dataset groups based on the 'size' field."""
+#     groups = {"small": [], "big": [], "all": []}
 
-    with open(models_file) as f:
-        models_config = json.load(f)
+#     for name, config in datasets.items():
+#         groups["all"].append(name)
+#         size = config.get("size", "small")
+#         if size == "small":
+#             groups["small"].append(name)
+#         elif size == "big":
+#             groups["big"].append(name)
 
-    with open(datasets_file) as f:
-        datasets_config = json.load(f)
+#     # Sort for consistency
+#     for group in groups.values():
+#         group.sort()
 
-    with open(hardware_file) as f:
-        hardware_config = json.load(f)
-
-    # Auto-generate dataset groups from "size" field if not provided
-    if "dataset_groups" not in datasets_config:
-        datasets_config["dataset_groups"] = _generate_dataset_groups(
-            datasets_config["datasets"]
-        )
-
-    return models_config, datasets_config, hardware_config
-
-
-def _generate_dataset_groups(datasets: Dict) -> Dict:
-    """Auto-generate dataset groups based on the 'size' field."""
-    groups = {"small": [], "big": [], "all": []}
-
-    for name, config in datasets.items():
-        groups["all"].append(name)
-        size = config.get("size", "small")
-        if size == "small":
-            groups["small"].append(name)
-        elif size == "big":
-            groups["big"].append(name)
-
-    # Sort for consistency
-    for group in groups.values():
-        group.sort()
-
-    return groups
+#     return groups
 
 
 def resolve_dataset_groups(datasets: List[str], datasets_config: Dict) -> List[str]:

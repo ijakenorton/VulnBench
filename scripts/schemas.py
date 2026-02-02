@@ -1,9 +1,10 @@
 """Configuration schemas and validation for vulnerability detection experiments."""
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Tuple
 import json
 from pathlib import Path
+import sys
 
 
 @dataclass
@@ -94,17 +95,30 @@ class ConfigLoader:
         self._hardware = None
         self._dataset_groups = None
 
+    def log_json_parse_error(self, config_file, e):
+        print(
+            f"Error parsing {config_file}: {e.msg}",
+            e.doc,
+            e.pos,
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     def load_models(self) -> dict[str, ModelConfig]:
         """Load model configurations."""
+        data = None
         if self._models is None:
             models_file = self.config_dir / "models.json"
             try:
                 with open(models_file) as f:
                     data = json.load(f)
             except json.JSONDecodeError as e:
-                raise json.JSONDecodeError(
-                    f"Error parsing {models_file}: {e.msg}", e.doc, e.pos
-                ) from e
+                self.log_json_parse_error(models_file, e)
+
+            if data is None:
+                print("failed to load models file exiting...", file=sys.stderr)
+                sys.exit(1)
+
             self._models = {
                 name: ModelConfig(**config) for name, config in data["models"].items()
             }
@@ -112,100 +126,95 @@ class ConfigLoader:
 
     def load_hardware(self) -> dict[str, HardwareConfig]:
         """Load model configurations."""
-        if self._models is None:
-            hardware_file = self.config_dir / "hardware.json"
+        data = None
+        hardware_file = self.config_dir / "hardware.json"
+        if self._hardware is None:
             try:
                 with open(hardware_file) as f:
                     data = json.load(f)
             except json.JSONDecodeError as e:
-                raise json.JSONDecodeError(
-                    f"Error parsing {hardware_file}: {e.msg}", e.doc, e.pos
-                ) from e
+                self.log_json_parse_error(hardware_file, e)
+
+            if data is None:
+                print("failed to load hardware file exiting...", file=sys.stderr)
+                sys.exit(1)
             self._hardware = {
                 name: HardwareConfig(**config) for name, config in data.items()
             }
+
+            if self._hardware is None:
+                print(
+                    "Hardware file is non, check",
+                    hardware_file,
+                    "is not empty",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         return self._hardware
 
     def load_datasets(self) -> dict[str, DatasetConfig]:
         """Load dataset configurations."""
+        data = None
         if self._datasets is None:
             datasets_file = self.config_dir / "datasets.json"
             try:
                 with open(datasets_file) as f:
                     data = json.load(f)
             except json.JSONDecodeError as e:
-                raise json.JSONDecodeError(
-                    f"Error parsing {datasets_file}: {e.msg}", e.doc, e.pos
-                ) from e
+                self.log_json_parse_error(datasets_file, e)
+            if data is None:
+                print("failed to load dataset file exiting...", file=sys.stderr)
+                sys.exit(1)
             self._datasets = {
                 name: DatasetConfig(**config)
                 for name, config in data["datasets"].items()
             }
 
-            # Auto-generate dataset groups from "size" field if not provided
-            if "dataset_groups" in data:
-                self._dataset_groups = data["dataset_groups"]
-            else:
-                self._dataset_groups = self._generate_dataset_groups()
         return self._datasets
-
-    def _generate_dataset_groups(self) -> dict[str, List[str]]:
-        """Auto-generate dataset groups based on the 'size' field."""
-        groups = {"small": [], "big": [], "all": []}
-
-        for name, config in self._datasets.items():
-            groups["all"].append(name)
-            if config.size == "small":
-                groups["small"].append(name)
-            elif config.size == "big":
-                groups["big"].append(name)
-
-        # Sort for consistency
-        for group in groups.values():
-            group.sort()
-
-        return groups
-
-    def get_dataset_group(self, group_name: str) -> List[str]:
-        """Get a list of datasets by group name."""
-        if self._dataset_groups is None:
-            self.load_datasets()
-        return self._dataset_groups.get(group_name, [])
 
     def load_experiment(self, experiment_file: Path) -> ExperimentConfig:
         """Load an experiment configuration."""
+        data = None
         try:
             with open(experiment_file) as f:
                 data = json.load(f)
         except json.JSONDecodeError as e:
-            raise json.JSONDecodeError(
-                f"Error parsing {experiment_file}: {e.msg}", e.doc, e.pos
-            ) from e
+            self.log_json_parse_error(experiment_file, e)
 
+        if data is None:
+            print("failed to load experiment file exiting...", file=sys.stderr)
+            sys.exit(1)
         # Expand dataset groups
         datasets = []
         for ds in data.get("datasets", []):
-            if ds.startswith("group:"):
-                group_name = ds.replace("group:", "")
-                datasets.extend(self.get_dataset_group(group_name))
-            else:
-                datasets.append(ds)
-
+            datasets.append(ds)
         data["datasets"] = datasets
-        # Remove metadata fields that aren't part of the dataclass
+
+        models = []
+        for ds in data.get("models", []):
+            models.append(ds)
+        data["models"] = models
         data.pop("_metadata", None)
 
         data["hardware"] = self.load_hardware()
         return ExperimentConfig(**data)
 
+    def load_config_files(
+        self,
+    ) -> Tuple[
+        dict[str, ModelConfig], dict[str, DatasetConfig], dict[str, HardwareConfig]
+    ]:
+        """Load models and datasets config files."""
+        models = self.load_models()
+        datasets = self.load_datasets()
+        hardware = self.load_hardware()
+
+        return models, datasets, hardware
+
     def validate_experiment(self, experiment: ExperimentConfig) -> List[str]:
         """Validate an experiment configuration and return any errors."""
         errors = []
-
-        models = self.load_models()
-        datasets = self.load_datasets()
-        # TODO work out if need to cross check this
-        hardware = self.load_hardware()
+        models, datasets, hardware = self.load_config_files()
 
         # Check all models exist
         for model in experiment.models:
@@ -217,7 +226,6 @@ class ConfigLoader:
             if dataset not in datasets:
                 errors.append(f"Unknown dataset: {dataset}")
 
-        print(hardware)
         # Check all hardware gpus exist
         for dataset in datasets.values():
             if dataset.size not in hardware:

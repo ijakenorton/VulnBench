@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import List, Optional, Set, Tuple
 from datetime import datetime
 
-from find_missing_experiments import load_config_files
+from utils import load_config_files
 from schemas import ConfigLoader, ExperimentConfig, ModelConfig, DatasetConfig
 from find_missing_experiments import (
     get_expected_experiments,
@@ -296,6 +296,7 @@ class ExperimentRunner:
 
         # Ensure output directory exists
         output_file.parent.mkdir(exist_ok=True, parents=True)
+        print(model)
 
         # Gradient boosting uses CPU-only with high memory
         if model and model.model_type == "gradient_boosting":
@@ -440,10 +441,6 @@ class ExperimentRunner:
         # Determine what to run
         if fix_missing:
 
-            # Load models config for directory mapping
-
-            models_config, _, _ = load_config_files(self.config_dir)
-
             # Convert ExperimentConfig to dict format for compatibility
             exp_dict = {
                 "models": experiment.models,
@@ -457,9 +454,7 @@ class ExperimentRunner:
             print(f"Expected {len(expected)} experiment combinations")
 
             print(f"Scanning results directory: {self.models_dir}")
-            actual = get_actual_experiments(
-                self.models_dir, models_config, experiment.out_suffix
-            )
+            actual = get_actual_experiments(self.models_dir, models)
             print(f"Found {len(actual)} completed experiments")
 
             # Find missing
@@ -497,8 +492,8 @@ class ExperimentRunner:
         job_count = 0
         job_ids = []
         for model_name, dataset_name, seed in runs_to_execute:
-            model = models[model_name]
-            dataset = datasets[dataset_name]
+            model = ModelConfig(**models[model_name])
+            dataset = DatasetConfig(**datasets[dataset_name])
             job_count += 1
 
             if use_sbatch:

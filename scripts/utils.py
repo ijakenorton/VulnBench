@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 import re
 
+
 def make_dirs_from_string(path_string):
     path = Path(path_string)
     os.makedirs(path.parent, exist_ok=True)
+
 
 def parse_threshold_json(threshold_json):
     """Parse threshold_results.json file (new format)"""
@@ -136,11 +138,10 @@ def load_config_files(config_dir: Path) -> Tuple[Dict, Dict, Dict]:
     with open(hardware_file) as f:
         hardware_config = json.load(f)
 
-    # Auto-generate dataset groups from "size" field if not provided
-    if "dataset_groups" not in datasets_config:
-        datasets_config["dataset_groups"] = _generate_dataset_groups(
-            datasets_config["datasets"]
-        )
+    # # Auto-generate dataset groups from "size" field if not provided
+    # if "dataset_groups" not in datasets_config:
+    #     datasets_config["dataset_groups"] = _generate_dataset_groups(
+    #         datasets_config["datasets"]
+    #     )
 
-    return models_config, datasets_config, hardware_config
-
+    return models_config["models"], datasets_config["datasets"], hardware_config
