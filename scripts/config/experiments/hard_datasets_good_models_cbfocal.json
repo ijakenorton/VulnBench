@@ -1,0 +1,14 @@
+{
+  "models": ["codet5", "graphcodebert", "codebert", "natgen"],
+  "datasets": ["icvul", "diversevul", "primevul"],
+  "seeds": [123456, 789012, 345678],
+  "loss_type": "cb_focal",
+  "cb_beta": 0.9999,
+  "focal_gamma": 2.0,
+  "epoch": 5,
+  "out_suffix": "splits",
+  "mode": "train",
+  "use_wandb": true,
+  "wandb_project": "vulnerability-detection-cb-focal",
+  "threshold_metric": "f1"
+}

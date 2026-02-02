@@ -16,16 +16,19 @@ Usage:
 import argparse
 import json
 import re
-from utils import parse_legacy_dirname, validate_metadata_consistency, parse_threshold_json
+from utils import (
+    parse_threshold_json,
+)
 from pathlib import Path
 from typing import Set, Tuple, List, Dict
 from collections import defaultdict
 
 
-def load_config_files(config_dir: Path) -> Tuple[Dict, Dict]:
+def load_config_files(config_dir: Path) -> Tuple[Dict, Dict, Dict]:
     """Load models and datasets config files."""
     models_file = config_dir / "models.json"
     datasets_file = config_dir / "datasets.json"
+    hardware_file = config_dir / "hardware.json"
 
     with open(models_file) as f:
         models_config = json.load(f)
@@ -33,20 +36,21 @@ def load_config_files(config_dir: Path) -> Tuple[Dict, Dict]:
     with open(datasets_file) as f:
         datasets_config = json.load(f)
 
+    with open(hardware_file) as f:
+        hardware_config = json.load(f)
+
     # Auto-generate dataset groups from "size" field if not provided
     if "dataset_groups" not in datasets_config:
-        datasets_config["dataset_groups"] = _generate_dataset_groups(datasets_config["datasets"])
+        datasets_config["dataset_groups"] = _generate_dataset_groups(
+            datasets_config["datasets"]
+        )
 
-    return models_config, datasets_config
+    return models_config, datasets_config, hardware_config
 
 
 def _generate_dataset_groups(datasets: Dict) -> Dict:
     """Auto-generate dataset groups based on the 'size' field."""
-    groups = {
-        "small": [],
-        "big": [],
-        "all": []
-    }
+    groups = {"small": [], "big": [], "all": []}
 
     for name, config in datasets.items():
         groups["all"].append(name)
@@ -86,7 +90,7 @@ def load_experiment_config(config_file: Path, config_dir: Path) -> Dict:
         exp_config = json.load(f)
 
     # Load models and datasets configs
-    models_config, datasets_config = load_config_files(config_dir)
+    models_config, datasets_config, _hardware_config = load_config_files(config_dir)
 
     # Resolve dataset groups
     datasets = resolve_dataset_groups(exp_config["datasets"], datasets_config)
@@ -103,11 +107,10 @@ def load_experiment_config(config_file: Path, config_dir: Path) -> Dict:
         "pos_weight": exp_config.get("pos_weight", 1.0),
         "epoch": exp_config.get("epoch", 5),
         "out_suffix": exp_config.get("out_suffix", "splits"),
-        "mode": exp_config.get("mode", "train")
+        "mode": exp_config.get("mode", "train"),
     }
 
     return config
-
 
 
 def get_expected_experiments(exp_config: Dict) -> Set[Tuple[str, str, int]]:
@@ -120,6 +123,7 @@ def get_expected_experiments(exp_config: Dict) -> Set[Tuple[str, str, int]]:
                 expected.add((model, dataset, seed))
 
     return expected
+
 
 def extract_missing_results(results_dir, models_config):
     """
@@ -148,7 +152,7 @@ def extract_missing_results(results_dir, models_config):
     for model_dir in Path(results_dir).iterdir():
         if not model_dir.is_dir():
             continue
-        if model_dir.name not in  models_config["models"]:
+        if model_dir.name not in models_config["models"]:
             continue
 
         model_name = model_dir.name
@@ -159,25 +163,29 @@ def extract_missing_results(results_dir, models_config):
 
             exp_name = exp_dir.name
             metadata_file = exp_dir / "data_split_info.json"
+            dataset = None
+            pos_weight = None
+            seed = None
+            anonymized = None
 
             if metadata_file.exists():
                 try:
-                    with open(metadata_file, 'r') as f:
+                    with open(metadata_file, "r") as f:
                         metadata = json.load(f)
 
-                    dataset = metadata.get('dataset_name', 'unknown')
-    
-                    seed = metadata.get('seed', 0)
-                    anonymized = metadata.get('anonymized', False)
+                    dataset = metadata.get("dataset_name", "unknown")
+
+                    seed = metadata.get("seed", 0)
+                    anonymized = metadata.get("anonymized", False)
 
                     if seed is None:
-                        seed = metadata.get('seed')
+                        seed = metadata.get("seed")
 
-                    hyperparams = metadata.get('hyperparameters', {})
-                    pos_weight = hyperparams.get('pos_weight', 1.0)
-                    learning_rate = hyperparams.get('learning_rate', 2e-5)
-                    dropout = hyperparams.get('dropout_probability', 0.1)
-                    epochs = hyperparams.get('epochs', 5)
+                    hyperparams = metadata.get("hyperparameters", {})
+                    pos_weight = hyperparams.get("pos_weight", 1.0)
+                    # learning_rate = hyperparams.get("learning_rate", 2e-5)
+                    # dropout = hyperparams.get("dropout_probability", 0.1)
+                    # epochs = hyperparams.get("epochs", 5)
 
                 except Exception as e:
                     print(f"  ✗ {exp_name}: Error reading metadata: {e}")
@@ -187,36 +195,40 @@ def extract_missing_results(results_dir, models_config):
 
             # Look for results files - prefer JSON, fallback to txt
             threshold_json = exp_dir / "threshold_results.json"
-            threshold_txt = exp_dir / "threshold_comparison.txt"
-            summary_file = exp_dir / "experiment_summary.txt"
+            results = None
 
             if threshold_json.exists():
                 results = parse_threshold_json(threshold_json)
 
-            if  results:
-                results.update({
-                    'model': model_name,
-                    'dataset': dataset,
-                    'seed': seed,
-                    'pos_weight': pos_weight,
-                    'anonymized': anonymized,
-                    'exp_dir': str(exp_dir)
-                })
+            if results:
+                results.update(
+                    {
+                        "model": model_name,
+                        "dataset": dataset,
+                        "seed": seed,
+                        "pos_weight": pos_weight,
+                        "anonymized": anonymized,
+                        "exp_dir": str(exp_dir),
+                    }
+                )
                 all_results.append(results)
             else:
                 missing = {
-                    'dir': str(exp_dir),
-                    'name': exp_name,
-                    'seed': seed,
-                    'dataset': dataset,
-                    'model_name': model_name,
-                    'anonymized': anonymized
+                    "dir": str(exp_dir),
+                    "name": exp_name,
+                    "seed": seed,
+                    "dataset": dataset,
+                    "model_name": model_name,
+                    "anonymized": anonymized,
                 }
                 missing_results.append(missing)
 
     return all_results, missing_results
 
-def get_actual_experiments(results_dir: Path, models_config: Dict, out_suffix: str = "") -> Set[Tuple[str, str, int]]:
+
+def get_actual_experiments(
+    results_dir: Path, models_config: Dict
+) -> Set[Tuple[str, str, int]]:
     """Scan results directory to find actual experiments run.
     Args:
         results_dir: Directory containing model subdirectories
@@ -240,9 +252,9 @@ def find_missing_experiments(expected: Set[Tuple], actual: Set[Tuple]) -> List[T
     return sorted(list(missing), key=lambda x: (x[0], x[1], x[2]))
 
 
-def generate_missing_config(missing_experiments: List[Tuple],
-                            original_config: Dict,
-                            output_file: Path):
+def generate_missing_config(
+    missing_experiments: List[Tuple], original_config: Dict, output_file: Path
+):
     """Generate a new experiment config for missing runs."""
     # Group by model and dataset
     missing_by_model_dataset = defaultdict(set)
@@ -268,13 +280,12 @@ def generate_missing_config(missing_experiments: List[Tuple],
             "generated_from": "find_missing_experiments.py",
             "total_missing": len(missing_experiments),
             "missing_details": [
-                {"model": m, "dataset": d, "seed": s}
-                for m, d, s in missing_experiments
-            ]
-        }
+                {"model": m, "dataset": d, "seed": s} for m, d, s in missing_experiments
+            ],
+        },
     }
 
-    with open(output_file, 'w') as f:
+    with open(output_file, "w") as f:
         json.dump(config, f, indent=2)
 
     print(f"\nGenerated missing runs config: {output_file}")
@@ -284,20 +295,22 @@ def generate_missing_config(missing_experiments: List[Tuple],
     print(f"  Total combinations: {len(missing_experiments)}")
 
 
-def print_missing_summary(missing: List[Tuple], actual: Set[Tuple], expected: Set[Tuple]):
+def print_missing_summary(
+    missing: List[Tuple], actual: Set[Tuple], expected: Set[Tuple]
+):
     """Print a summary of missing experiments."""
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("EXPERIMENT COVERAGE SUMMARY")
-    print("="*80)
+    print("=" * 80)
     print(f"Expected experiments: {len(expected)}")
     print(f"Completed experiments: {len(actual)}")
     print(f"Missing experiments: {len(missing)}")
     print(f"Completion rate: {100 * len(actual) / len(expected):.1f}%")
 
     if missing:
-        print("\n" + "-"*80)
+        print("\n" + "-" * 80)
         print("MISSING EXPERIMENTS BY MODEL")
-        print("-"*80)
+        print("-" * 80)
 
         by_model = defaultdict(list)
         for model, dataset, seed in missing:
@@ -316,9 +329,9 @@ def print_missing_summary(missing: List[Tuple], actual: Set[Tuple], expected: Se
                 seeds = sorted(by_dataset[dataset])
                 print(f"  {dataset:20s}: seeds {seeds}")
 
-        print("\n" + "-"*80)
+        print("\n" + "-" * 80)
         print("MISSING EXPERIMENTS BY DATASET")
-        print("-"*80)
+        print("-" * 80)
 
         by_dataset = defaultdict(list)
         for model, dataset, seed in missing:
@@ -340,35 +353,33 @@ def print_missing_summary(missing: List[Tuple], actual: Set[Tuple], expected: Se
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Find missing experiments by comparing config with results'
+        description="Find missing experiments by comparing config with results"
     )
     parser.add_argument(
-        '--config',
+        "--config",
         type=Path,
-        required=True,
-        help='Experiment config file (e.g., config/experiments/train_all.json)'
+        default=Path("config/experiments/train_all.json"),
+        help="Experiment config file (e.g., config/experiments/train_all.json)",
     )
     parser.add_argument(
-        '--config-dir',
+        "--config-dir",
         type=Path,
-        default=Path('config'),
-        help='Directory containing models.json and datasets.json'
+        default=Path("config"),
+        help="Directory containing models.json and datasets.json",
     )
     parser.add_argument(
-        '--results-dir',
+        "--results-dir",
         type=Path,
-        default=Path('../models'),
-        help='Directory containing experiment results'
+        default=Path("../models"),
+        help="Directory containing experiment results",
     )
     parser.add_argument(
-        '--generate-config',
+        "--generate-config",
         type=Path,
-        help='Generate a new config file for missing experiments'
+        help="Generate a new config file for missing experiments",
     )
     parser.add_argument(
-        '--json-output',
-        type=Path,
-        help='Output missing experiments as JSON'
+        "--json-output", type=Path, help="Output missing experiments as JSON"
     )
 
     args = parser.parse_args()
@@ -378,7 +389,9 @@ def main():
     exp_config = load_experiment_config(args.config, args.config_dir)
 
     # Load models config for legacy directory mapping
-    models_config, _ = load_config_files(args.config_dir)
+    models_config, _dataset_config, _hardware_config = load_config_files(
+        args.config_dir
+    )
 
     # Get expected experiments
     expected = get_expected_experiments(exp_config)
@@ -386,7 +399,7 @@ def main():
 
     # Scan results
     print(f"\nScanning results directory: {args.results_dir}")
-    actual = get_actual_experiments(args.results_dir, models_config, exp_config.get("out_suffix", "splits"))
+    actual = get_actual_experiments(args.results_dir, models_config)
     print(f"Found {len(actual)} completed experiments")
 
     # Find missing
@@ -407,12 +420,11 @@ def main():
             "missing": len(missing),
             "completion_rate": 100 * len(actual) / len(expected) if expected else 0,
             "missing_experiments": [
-                {"model": m, "dataset": d, "seed": s}
-                for m, d, s in missing
-            ]
+                {"model": m, "dataset": d, "seed": s} for m, d, s in missing
+            ],
         }
 
-        with open(args.json_output, 'w') as f:
+        with open(args.json_output, "w") as f:
             json.dump(output, f, indent=2)
 
         print(f"\nSaved missing experiments to: {args.json_output}")

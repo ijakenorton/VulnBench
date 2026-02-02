@@ -1,0 +1,17 @@
+{
+  "_metadata": {
+    "description": "Test GHOST threshold optimization integration",
+    "created": "2024-11-04"
+  },
+  "models": ["codebert"],
+  "datasets": ["icvul"],
+  "seeds": [123456],
+  "mode": "train",
+  "epoch": 1,
+  "out_suffix": "ghost_test",
+  "threshold_method": "ghost",
+  "threshold_metric": "kappa",
+  "ghost_n_subsets": 50,
+  "ghost_subset_size": 0.8,
+  "use_wandb": false
+}

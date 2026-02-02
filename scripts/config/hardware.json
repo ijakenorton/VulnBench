@@ -1,0 +1,8 @@
+{
+    "small": {
+        "partition": "aoraki_gpu"
+    },
+    "big": {
+        "partition": "aoraki_gpu_H100"
+    }
+}

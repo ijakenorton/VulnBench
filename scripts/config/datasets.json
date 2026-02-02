@@ -3,74 +3,62 @@
     "icvul": {
       "name": "icvul",
       "size": "small",
-      "time_hours": 20,
-      "gpu": "aoraki_gpu"
+      "time_hours": 20
     },
     "mvdsc_mixed": {
       "name": "mvdsc_mixed",
       "size": "small",
-      "time_hours": 20,
-      "gpu": "aoraki_gpu"
+      "time_hours": 20
     },
     "devign": {
       "name": "devign",
       "size": "small",
-      "time_hours": 20,
-      "gpu": "aoraki_gpu"
+      "time_hours": 20
     },
     "dedup-devign": {
       "name": "dedup-devign",
       "size": "small",
-      "time_hours": 20,
-      "gpu": "aoraki_gpu"
+      "time_hours": 20
     },
     "vuldeepecker": {
       "name": "vuldeepecker",
       "size": "small",
-      "time_hours": 20,
-      "gpu": "aoraki_gpu"
+      "time_hours": 20
     },
     "cvefixes": {
       "name": "cvefixes",
       "size": "small",
-      "time_hours": 20,
-      "gpu": "aoraki_gpu"
+      "time_hours": 20
     },
     "juliet": {
       "name": "juliet",
       "size": "small",
-      "time_hours": 20,
-      "gpu": "aoraki_gpu"
+      "time_hours": 20
     },
     "dedup-big-vul": {
       "name": "dedup-big-vul",
       "size": "small",
-      "time_hours": 20,
-      "gpu": "aoraki_gpu"
+      "time_hours": 20
     },
     "reveal": {
       "name": "reveal",
       "size": "small",
-      "time_hours": 20,
-      "gpu": "aoraki_gpu"
+      "time_hours": 20
     },
     "diversevul": {
       "name": "diversevul",
       "size": "big",
-      "time_hours": 50,
-      "gpu": "aoraki_gpu_H100"
+      "time_hours": 50
     },
     "draper": {
       "name": "draper",
       "size": "big",
-      "time_hours": 50,
-      "gpu": "aoraki_gpu_H100"
+      "time_hours": 50
     },
     "primevul": {
       "name": "primevul",
       "size": "big",
-      "time_hours": 50,
-      "gpu": "aoraki_gpu_H100"
+      "time_hours": 50
     }
   }
 }

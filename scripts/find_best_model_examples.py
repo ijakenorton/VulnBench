@@ -49,6 +49,11 @@ def get_best_model_per_dataset(df: pd.DataFrame) -> Dict[str, str]:
             print(f"Warning: No F1 column found for {dataset}")
             continue
 
+        # Skip datasets with all NaN F1 values
+        if dataset_df[f1_col].isna().all():
+            print(f"Warning: All F1 values are NaN for {dataset}, skipping...")
+            continue
+
         best_idx = dataset_df[f1_col].idxmax()
         best_model = dataset_df.loc[best_idx, 'model']
         best_f1 = dataset_df.loc[best_idx, f1_col]
@@ -130,36 +135,57 @@ def find_model_predictions(
     out_suffix: str = "splits"
 ) -> Dict[int, Tuple[float, int]]:
     """Find and load predictions for a specific model/dataset/seed."""
-    # Dataset name may already include the suffix
-    if dataset_name.endswith(f"_{out_suffix}"):
-        exp_name = f"{dataset_name}_seed{seed}"
-    else:
-        exp_name = f"{dataset_name}_{out_suffix}_seed{seed}"
+    # Strip common suffixes from dataset name to get base name
+    base_dataset = dataset_name.replace("_splits", "").replace("_split", "")
 
-    # Try direct model name
-    exp_dir = models_dir / model_name / exp_name
+    # Try multiple naming patterns that match _generate_experiment_canonical_name
+    patterns_to_try = [
+        f"{base_dataset}_seed{seed}",                    # Standard: devign_seed123456
+        f"{base_dataset}_seed{seed}_{out_suffix}",       # With suffix: devign_seed123456_splits
+        f"{dataset_name}_seed{seed}",                    # Original name with seed
+    ]
 
-    if not exp_dir.exists():
-        # Try with -base suffix (legacy naming)
-        exp_dir = models_dir / f"{model_name}-base" / exp_name
+    # Model directory names to try
+    model_dirs_to_try = [
+        model_name,           # e.g., codebert
+        f"{model_name}-base", # e.g., codebert-base (legacy)
+    ]
 
-    if not exp_dir.exists():
-        # print(f"    Warning: Directory not found: {exp_dir}")
-        return {}
+    for model_dir in model_dirs_to_try:
+        model_path = models_dir / model_dir
+        if not model_path.exists():
+            continue
 
-    pred_file = exp_dir / "predictions.txt"
-    if not pred_file.exists():
-        print(f"    Warning: predictions.txt not found in {exp_dir}")
-        return {}
+        for pattern in patterns_to_try:
+            exp_dir = model_path / pattern
+            if exp_dir.exists():
+                pred_file = exp_dir / "predictions.txt"
+                if pred_file.exists():
+                    return load_predictions(pred_file)
 
-    return load_predictions(pred_file)
+    # If not found with exact patterns, try glob matching
+    for model_dir in model_dirs_to_try:
+        model_path = models_dir / model_dir
+        if not model_path.exists():
+            continue
+
+        # Match directories starting with dataset name and containing seed
+        for exp_dir in model_path.iterdir():
+            if exp_dir.is_dir() and exp_dir.name.startswith(base_dataset) and f"seed{seed}" in exp_dir.name:
+                # Skip anonymized versions for now
+                if "_anon" in exp_dir.name:
+                    continue
+                pred_file = exp_dir / "predictions.txt"
+                if pred_file.exists():
+                    return load_predictions(pred_file)
+
+    return {}
 
 
-def find_dataset_file(data_dir: Path, dataset_name: str) -> Path:
+def find_dataset_file(data_dir: Path, dataset_name: str) -> Path | None:
     """Find the dataset file (handles both regular and anonymized versions)."""
     # Remove common suffixes from dataset name
     base_name = dataset_name.replace('_splits', '').replace('_anonymized', '')
-
     dataset_file = data_dir / base_name / f"{base_name}_full_dataset.jsonl"
     if dataset_file.exists():
         return dataset_file
@@ -168,8 +194,7 @@ def find_dataset_file(data_dir: Path, dataset_name: str) -> Path:
     if anon_file.exists():
         return anon_file
 
-    raise FileNotFoundError(f"Dataset file not found for {dataset_name} (tried {base_name})")
-
+    return None
 
 def analyze_differential_performance(
     dataset_name: str,
@@ -179,7 +204,7 @@ def analyze_differential_performance(
     models_dir: Path,
     data_dir: Path,
     out_suffix: str = "splits"
-) -> Dict:
+) -> Dict | None:
     """
     Find examples where best model succeeds and others fail.
     """
@@ -220,79 +245,99 @@ def analyze_differential_performance(
         'best_correct_most_others_wrong': [],  # Best model right, majority of others wrong
         'best_tp_others_fn': [],  # Best found vulnerability, others missed
         'best_tn_others_fp': [],  # Best correctly safe, others false alarm
+        'all_models_wrong': [],  # ALL models got it wrong (hardest examples)
+        'all_models_wrong_fn': [],  # All models missed a vulnerability (FN)
+        'all_models_wrong_fp': [],  # All models had false alarm (FP)
     }
 
-    best_preds = all_predictions[best_model]
+    # Get all indices that have predictions from any model
+    all_indices = set()
+    for model, preds in all_predictions.items():
+        all_indices.update(preds.keys())
 
-    for idx in best_preds.keys():
+    for idx in all_indices:
         if idx not in ground_truth:
             continue
 
         label = ground_truth[idx]
-        best_logit, best_pred = best_preds[idx]
-        best_category = categorize_prediction(best_pred, label)
+        code = code_samples.get(idx, '')
 
-        # Check if best model is correct
-        if best_category not in ['TP', 'TN']:
-            continue
-
-        # Check other models
-        others_wrong = []
-        others_right = []
-        for model in other_models:
-            if model not in all_predictions or idx not in all_predictions[model]:
-                continue
-
-            other_logit, other_pred = all_predictions[model][idx]
-            other_category = categorize_prediction(other_pred, label)
-
-            if other_category in ['TP', 'TN']:
-                others_right.append(model)
-            else:
-                others_wrong.append(model)
-
-        # Skip if no other models had predictions for this sample
-        if not others_wrong and not others_right:
-            continue
-
-        # Skip if best model isn't doing better than others
-        if len(others_wrong) == 0:
-            continue
-
-        # This is a differential example!
-        example = {
-            'index': idx,
-            'label': label,
-            'code': code_samples.get(idx, ''),
-            'best_model': best_model,
-            'best_logit': best_logit,
-            'best_pred': best_pred,
-            'best_category': best_category,
-            'other_predictions': {},
-            'num_others_wrong': len(others_wrong),
-            'num_others_right': len(others_right)
-        }
-
-        for model in other_models:
-            if model in all_predictions and idx in all_predictions[model]:
-                other_logit, other_pred = all_predictions[model][idx]
-                other_category = categorize_prediction(other_pred, label)
-                example['other_predictions'][model] = {
-                    'logit': other_logit,
-                    'pred': other_pred,
-                    'category': other_category
+        # Collect predictions from all models for this example
+        model_results = {}
+        for model, preds in all_predictions.items():
+            if idx in preds:
+                logit, pred = preds[idx]
+                category = categorize_prediction(pred, label)
+                model_results[model] = {
+                    'logit': logit,
+                    'pred': pred,
+                    'category': category
                 }
 
-        # Categorize the type of differential
-        if len(others_right) == 0:
-            results['best_correct_all_others_wrong'].append(example)
-        if len(others_wrong) > len(others_right):
-            results['best_correct_most_others_wrong'].append(example)
+        if not model_results:
+            continue
 
-        if best_category == 'TP':
-            results['best_tp_others_fn'].append(example)
-        elif best_category == 'TN':
-            results['best_tn_others_fp'].append(example)
+        # Check if ALL models got it wrong
+        all_wrong = all(r['category'] in ['FP', 'FN'] for r in model_results.values())
+        all_right = all(r['category'] in ['TP', 'TN'] for r in model_results.values())
+
+        if all_wrong:
+            example = {
+                'index': idx,
+                'label': label,
+                'code': code,
+                'code_length': len(code),
+                'predictions': model_results,
+                'num_models': len(model_results),
+            }
+            results['all_models_wrong'].append(example)
+
+            # Subcategorize by error type
+            first_category = list(model_results.values())[0]['category']
+            if first_category == 'FN':
+                results['all_models_wrong_fn'].append(example)
+            elif first_category == 'FP':
+                results['all_models_wrong_fp'].append(example)
+
+        # Also track differential performance (original logic)
+        if best_model in model_results:
+            best_result = model_results[best_model]
+            best_category = best_result['category']
+
+            if best_category in ['TP', 'TN']:
+                others_wrong = [m for m, r in model_results.items()
+                               if m != best_model and r['category'] in ['FP', 'FN']]
+                others_right = [m for m, r in model_results.items()
+                               if m != best_model and r['category'] in ['TP', 'TN']]
+
+                if others_wrong:
+                    example = {
+                        'index': idx,
+                        'label': label,
+                        'code': code,
+                        'code_length': len(code),
+                        'best_model': best_model,
+                        'best_logit': best_result['logit'],
+                        'best_pred': best_result['pred'],
+                        'best_category': best_category,
+                        'other_predictions': {m: r for m, r in model_results.items() if m != best_model},
+                        'num_others_wrong': len(others_wrong),
+                        'num_others_right': len(others_right)
+                    }
+
+                    if len(others_right) == 0:
+                        results['best_correct_all_others_wrong'].append(example)
+                    if len(others_wrong) > len(others_right):
+                        results['best_correct_most_others_wrong'].append(example)
+
+                    if best_category == 'TP':
+                        results['best_tp_others_fn'].append(example)
+                    elif best_category == 'TN':
+                        results['best_tn_others_fp'].append(example)
+
+    # Sort "all models wrong" by code length to find simplest examples
+    for key in ['all_models_wrong', 'all_models_wrong_fn', 'all_models_wrong_fp']:
+        results[key].sort(key=lambda x: x['code_length'])
 
     # Print summary
     print(f"\nDifferential Performance Summary:")
@@ -304,7 +349,7 @@ def analyze_differential_performance(
     return results
 
 
-def print_examples(results: Dict, max_examples: int = 5):
+def print_examples(results: Dict, max_examples: int = 5, categories: List[str] = None):
     """Pretty print example code snippets."""
     for category, examples in results.items():
         if not examples:
@@ -315,19 +360,28 @@ def print_examples(results: Dict, max_examples: int = 5):
         print(f"{'='*80}")
 
         for i, ex in enumerate(examples[:max_examples]):
-            print(f"\n--- Example {i+1}/{min(len(examples), max_examples)} (Index: {ex['index']}) ---")
+            code_len = ex.get('code_length', len(ex.get('code', '')))
+            print(f"\n--- Example {i+1}/{min(len(examples), max_examples)} (Index: {ex['index']}, {code_len} chars) ---")
             print(f"Label: {ex['label']} ({'Vulnerable' if ex['label'] == 1 else 'Safe'})")
-            print(f"\nBest Model ({ex['best_model']}):")
-            print(f"  Logit: {ex['best_logit']:.4f}, Prediction: {ex['best_pred']} ({ex['best_category']})")
 
-            print(f"\nOther Models:")
-            for model, preds in ex['other_predictions'].items():
-                print(f"  {model}: Logit={preds['logit']:.4f}, Pred={preds['pred']} ({preds['category']})")
+            # Handle "all models wrong" format
+            if 'predictions' in ex:
+                print(f"\nAll Model Predictions:")
+                for model, preds in ex['predictions'].items():
+                    print(f"  {model}: Logit={preds['logit']:.4f}, Pred={preds['pred']} ({preds['category']})")
+            else:
+                # Original format with best model vs others
+                print(f"\nBest Model ({ex['best_model']}):")
+                print(f"  Logit: {ex['best_logit']:.4f}, Prediction: {ex['best_pred']} ({ex['best_category']})")
+
+                print(f"\nOther Models:")
+                for model, preds in ex['other_predictions'].items():
+                    print(f"  {model}: Logit={preds['logit']:.4f}, Pred={preds['pred']} ({preds['category']})")
 
             print(f"\nCode:")
             print("-" * 80)
-            code = ex['code'][:1000]  # Limit code length
-            if len(ex['code']) > 1000:
+            code = ex['code'][:2000]  # Limit code length
+            if len(ex['code']) > 2000:
                 code += "\n... (truncated)"
             print(code)
             print("-" * 80)
@@ -442,7 +496,12 @@ Examples:
         all_results[dataset] = results
 
         # Print examples for this dataset
-        print_examples(results, args.max_examples)
+        if args.show_hardest:
+            # Only show "all models wrong" categories
+            print_examples(results, args.max_examples,
+                          categories=['all_models_wrong', 'all_models_wrong_fn', 'all_models_wrong_fp'])
+        else:
+            print_examples(results, args.max_examples)
 
     # Save to file if requested
     if args.output:
