@@ -1,11 +1,13 @@
+from typing import Dict, Tuple
 import os
+import sys
 import json
-import pandas as pd
-import numpy as np
-import argparse
 from pathlib import Path
 import re
 
+def make_dirs_from_string(path_string):
+    path = Path(path_string)
+    os.makedirs(path.parent, exist_ok=True)
 
 def parse_threshold_json(threshold_json):
     """Parse threshold_results.json file (new format)"""
@@ -142,3 +144,4 @@ def load_config_files(config_dir: Path) -> Tuple[Dict, Dict, Dict]:
         )
 
     return models_config, datasets_config, hardware_config
+

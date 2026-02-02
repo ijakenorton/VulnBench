@@ -18,18 +18,18 @@ fi
 host="ijakenorton"
 
 datasets=(
-    "cvefixes_for_ml"
-    "devign_for_ml"
-    "diversevul_for_ml"
-    "draper_for_ml"
-    "icvul_for_ml"
-    "juliet_for_ml"
-    "mvdsc_mixed_for_ml"
-    "reveal_for_ml"
-    "vuldeepecker_for_ml"
+    "cvefixes"
+    "devign"
+    "diversevul"
+    "draper"
+    "icvul"
+    "juliet"
+    "mvdsc_mixed"
+    "reveal"
+    "vuldeepecker"
 )
 
 for dataset in "${datasets[@]}"; do
     echo "Downloading $dataset..."
-    hf download "${host}/${dataset}" --repo-type=dataset --force-download --local-dir ./${dataset}/
+    hf download "${host}/${dataset}_for_ml" --repo-type=dataset --force-download --local-dir ./${dataset}/
 done

@@ -11,6 +11,7 @@ import numpy as np
 import argparse
 from pathlib import Path
 import re
+from utils import make_dirs_from_string
 
 
 def extract_results_from_directory(results_dir):
@@ -43,6 +44,7 @@ def extract_results_from_directory(results_dir):
 
         model_name = model_dir.name
         print(f"Processing model: {model_name}")
+
 
         for exp_dir in model_dir.iterdir():
             if not exp_dir.is_dir():
@@ -636,6 +638,7 @@ def report_stats(aggregated_df, args):
 
     print(f"Aggregated into {len(aggregated_df)} model/dataset combinations")
 
+    make_dirs_from_string(args.missing_output)
     # Save detailed results
     detailed_output = args.output.replace(".csv", "_detailed.csv")
     aggregated_df.to_csv(detailed_output, index=False)
@@ -717,13 +720,10 @@ def main():
         "--results_dir", default="../models", help="Directory containing model results"
     )
     parser.add_argument(
-        "--output", default="results_summary.csv", help="Output CSV file"
+        "--output", default="artifacts/results_summary.csv", help="Output CSV file"
     )
     parser.add_argument(
         "--min_seeds", default=3, type=int, help="Minimum seeds required for inclusion"
-    )
-    parser.add_argument(
-        "--json", action="store_true", help="Also output results as JSON"
     )
     parser.add_argument(
         "--missing-output",
@@ -748,6 +748,7 @@ def main():
     aggregated_df = aggregated_df_full[aggregated_df_full["n_seeds"] >= args.min_seeds]
     report_stats(aggregated_df, args)
 
+    make_dirs_from_string(args.missing_output)
     # Save missing results to JSON
     with open(args.missing_output, "w") as f:
         json.dump(
@@ -755,24 +756,22 @@ def main():
         )
     print(f"\nSaved missing results to: {args.missing_output}")
 
-    # Output results as JSON if requested
-    if args.json:
-        json_output = args.output.replace(".csv", ".json")
+    json_output = args.output.replace(".csv", ".json")
 
-        # Convert DataFrame to JSON-friendly format
-        results_json = {
-            "summary": aggregated_df.to_dict("records"),
-            "metadata": {
-                "total_experiments": len(all_results),
-                "aggregated_combinations": len(aggregated_df),
-                "missing_count": len(missing_results),
-                "min_seeds_filter": args.min_seeds,
-            },
-        }
+    # Convert DataFrame to JSON-friendly format
+    results_json = {
+        "summary": aggregated_df.to_dict("records"),
+        "metadata": {
+            "total_experiments": len(all_results),
+            "aggregated_combinations": len(aggregated_df),
+            "missing_count": len(missing_results),
+            "min_seeds_filter": args.min_seeds,
+        },
+    }
 
-        with open(json_output, "w") as f:
-            json.dump(results_json, f, indent=2)
-        print(f"Saved JSON results to: {json_output}")
+    with open(json_output, "w") as f:
+        json.dump(results_json, f, indent=2)
+    print(f"Saved JSON results to: {json_output}")
 
     aggregated_df = aggregated_df_full[aggregated_df_full["n_seeds"] != 3]
     if aggregated_df.size != 0:

@@ -623,6 +623,9 @@ Execution modes:
   --no-sbatch:  Run locally without sbatch
 
 Examples:
+  python runner.py --list-models
+  python runner.py --list-datasets
+  python runner.py --list-experiments 
   python runner.py train_linevul_all                    # Direct Python via sbatch
   python runner.py train_linevul_all --dry-run          # Preview commands
   python runner.py train_linevul_all --fix-missing      # Only run missing experiments
