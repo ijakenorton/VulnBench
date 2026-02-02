@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, Optional, Set, Tuple
 from datetime import datetime
 
+from find_missing_experiments import load_config_files
 from schemas import ConfigLoader, ExperimentConfig, ModelConfig, DatasetConfig
 from find_missing_experiments import (
     get_expected_experiments,
@@ -294,7 +295,7 @@ class ExperimentRunner:
         output_file = self.logs_dir / f"{dataset.name}_out" / f"{canonical_name}_%j.out"
 
         # Ensure output directory exists
-        output_file.parent.mkdir(exist_ok=True)
+        output_file.parent.mkdir(exist_ok=True, parents=True)
 
         # Gradient boosting uses CPU-only with high memory
         if model and model.model_type == "gradient_boosting":
@@ -411,7 +412,6 @@ class ExperimentRunner:
         self,
         experiment: ExperimentConfig,
         use_sbatch: bool = True,
-        legacy_mode: bool = False,
         dry_run: bool = False,
         fix_missing: bool = False,
         anonymized: bool = False,
@@ -422,8 +422,6 @@ class ExperimentRunner:
         Args:
             experiment: Experiment configuration
             use_sbatch: Whether to use sbatch for job submission
-            legacy_mode: If True (with use_sbatch), use old bash scripts with env vars.
-                        If False (with use_sbatch), use sbatch --wrap with direct Python calls.
             dry_run: If True, print commands without executing
             fix_missing: If True, only run experiments that are missing from results directory
             anonymized: If True, run anonymized versions of the datasets. e.g. juliet_full_dataset_anonymized.jsonl
@@ -437,23 +435,19 @@ class ExperimentRunner:
             sys.exit(1)
 
         # Load configs
-        models = self.config_loader.load_models()
-        datasets = self.config_loader.load_datasets()
-        hardware = self.config_loader.load_hardware()
 
+        models, datasets, _hardware = load_config_files(self.config_dir)
         # Determine what to run
         if fix_missing:
 
             # Load models config for directory mapping
-            from find_missing_experiments import load_config_files
 
-            models_config, _ = load_config_files(self.config_dir)
+            models_config, _, _ = load_config_files(self.config_dir)
 
             # Convert ExperimentConfig to dict format for compatibility
             exp_dict = {
                 "models": experiment.models,
                 "datasets": experiment.datasets,
-                "hardware": experiment.datasets,
                 "seeds": experiment.seeds,
                 "out_suffix": experiment.out_suffix,
             }
@@ -490,7 +484,7 @@ class ExperimentRunner:
                 f"{len(experiment.datasets)} dataset(s), {len(experiment.seeds)} seed(s)"
             )
 
-        mode_desc = "legacy (bash)" if legacy_mode else "direct (Python)"
+        mode_desc = "direct (Python)"
         if use_sbatch:
             print(f"Execution mode: sbatch [{mode_desc}]")
         else:
@@ -583,6 +577,9 @@ class ExperimentRunner:
 
 
 def init_experiment_path(path):
+    global parser
+    if parser == None:
+        parser = parser_init()
     if not path:
         parser.print_help()
         sys.exit(1)
@@ -616,20 +613,17 @@ def find_project_root() -> Path:
 parser = None
 
 
-def main():
-    global parser
+def parser_init():
     parser = argparse.ArgumentParser(
         description="Run vulnerability detection experiments",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Execution modes:
   Default:      sbatch with direct Python calls (sbatch --wrap)
-  --legacy:     sbatch with legacy bash scripts (train_split.sh/test_split.sh)
   --no-sbatch:  Run locally without sbatch
 
 Examples:
   python runner.py train_linevul_all                    # Direct Python via sbatch
-  python runner.py train_linevul_all --legacy           # Legacy bash scripts via sbatch
   python runner.py train_linevul_all --dry-run          # Preview commands
   python runner.py train_linevul_all --fix-missing      # Only run missing experiments
   python runner.py train_linevul_all --no-sbatch        # Run locally
@@ -640,11 +634,6 @@ Examples:
     )
     parser.add_argument(
         "--no-sbatch", action="store_true", help="Run directly without sbatch"
-    )
-    parser.add_argument(
-        "--legacy",
-        action="store_true",
-        help="Use legacy bash scripts with sbatch (instead of direct Python)",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print commands without executing"
@@ -668,7 +657,13 @@ Examples:
     parser.add_argument(
         "--list-experiments", action="store_true", help="List available experiments"
     )
+    return parser
 
+
+def main():
+    global parser
+
+    parser = parser_init()
     args = parser.parse_args()
 
     project_root = find_project_root()
@@ -723,7 +718,6 @@ Examples:
     runner.run_experiment(
         experiment,
         use_sbatch=not args.no_sbatch,
-        legacy_mode=args.legacy,
         dry_run=args.dry_run,
         fix_missing=args.fix_missing,
         anonymized=args.anonymized,

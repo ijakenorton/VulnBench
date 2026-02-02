@@ -17,8 +17,6 @@ import argparse
 import json
 import re
 from utils import (
-    parse_legacy_dirname,
-    validate_metadata_consistency,
     parse_threshold_json,
 )
 from pathlib import Path
@@ -26,10 +24,11 @@ from typing import Set, Tuple, List, Dict
 from collections import defaultdict
 
 
-def load_config_files(config_dir: Path) -> Tuple[Dict, Dict]:
+def load_config_files(config_dir: Path) -> Tuple[Dict, Dict, Dict]:
     """Load models and datasets config files."""
     models_file = config_dir / "models.json"
     datasets_file = config_dir / "datasets.json"
+    hardware_file = config_dir / "hardware.json"
 
     with open(models_file) as f:
         models_config = json.load(f)
@@ -37,13 +36,16 @@ def load_config_files(config_dir: Path) -> Tuple[Dict, Dict]:
     with open(datasets_file) as f:
         datasets_config = json.load(f)
 
+    with open(hardware_file) as f:
+        hardware_config = json.load(f)
+
     # Auto-generate dataset groups from "size" field if not provided
     if "dataset_groups" not in datasets_config:
         datasets_config["dataset_groups"] = _generate_dataset_groups(
             datasets_config["datasets"]
         )
 
-    return models_config, datasets_config
+    return models_config, datasets_config, hardware_config
 
 
 def _generate_dataset_groups(datasets: Dict) -> Dict:
@@ -88,7 +90,7 @@ def load_experiment_config(config_file: Path, config_dir: Path) -> Dict:
         exp_config = json.load(f)
 
     # Load models and datasets configs
-    models_config, datasets_config = load_config_files(config_dir)
+    models_config, datasets_config, _hardware_config = load_config_files(config_dir)
 
     # Resolve dataset groups
     datasets = resolve_dataset_groups(exp_config["datasets"], datasets_config)
@@ -161,6 +163,10 @@ def extract_missing_results(results_dir, models_config):
 
             exp_name = exp_dir.name
             metadata_file = exp_dir / "data_split_info.json"
+            dataset = None
+            pos_weight = None
+            seed = None
+            anonymized = None
 
             if metadata_file.exists():
                 try:
@@ -177,9 +183,9 @@ def extract_missing_results(results_dir, models_config):
 
                     hyperparams = metadata.get("hyperparameters", {})
                     pos_weight = hyperparams.get("pos_weight", 1.0)
-                    learning_rate = hyperparams.get("learning_rate", 2e-5)
-                    dropout = hyperparams.get("dropout_probability", 0.1)
-                    epochs = hyperparams.get("epochs", 5)
+                    # learning_rate = hyperparams.get("learning_rate", 2e-5)
+                    # dropout = hyperparams.get("dropout_probability", 0.1)
+                    # epochs = hyperparams.get("epochs", 5)
 
                 except Exception as e:
                     print(f"  ✗ {exp_name}: Error reading metadata: {e}")
@@ -189,8 +195,7 @@ def extract_missing_results(results_dir, models_config):
 
             # Look for results files - prefer JSON, fallback to txt
             threshold_json = exp_dir / "threshold_results.json"
-            threshold_txt = exp_dir / "threshold_comparison.txt"
-            summary_file = exp_dir / "experiment_summary.txt"
+            results = None
 
             if threshold_json.exists():
                 results = parse_threshold_json(threshold_json)
@@ -222,7 +227,7 @@ def extract_missing_results(results_dir, models_config):
 
 
 def get_actual_experiments(
-    results_dir: Path, models_config: Dict, out_suffix: str = ""
+    results_dir: Path, models_config: Dict
 ) -> Set[Tuple[str, str, int]]:
     """Scan results directory to find actual experiments run.
     Args:
@@ -384,7 +389,9 @@ def main():
     exp_config = load_experiment_config(args.config, args.config_dir)
 
     # Load models config for legacy directory mapping
-    models_config, _ = load_config_files(args.config_dir)
+    models_config, _dataset_config, _hardware_config = load_config_files(
+        args.config_dir
+    )
 
     # Get expected experiments
     expected = get_expected_experiments(exp_config)
@@ -392,9 +399,7 @@ def main():
 
     # Scan results
     print(f"\nScanning results directory: {args.results_dir}")
-    actual = get_actual_experiments(
-        args.results_dir, models_config, exp_config.get("out_suffix", "splits")
-    )
+    actual = get_actual_experiments(args.results_dir, models_config)
     print(f"Found {len(actual)} completed experiments")
 
     # Find missing
