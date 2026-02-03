@@ -127,7 +127,7 @@ def extract_missing_results(results_dir, models_config):
     for model_dir in Path(results_dir).iterdir():
         if not model_dir.is_dir():
             continue
-        if model_dir.name not in models_config["models"]:
+        if model_dir.name not in models_config:
             continue
 
         model_name = model_dir.name
@@ -158,17 +158,13 @@ def extract_missing_results(results_dir, models_config):
 
                     hyperparams = metadata.get("hyperparameters", {})
                     pos_weight = hyperparams.get("pos_weight", 1.0)
-                    # learning_rate = hyperparams.get("learning_rate", 2e-5)
-                    # dropout = hyperparams.get("dropout_probability", 0.1)
-                    # epochs = hyperparams.get("epochs", 5)
 
                 except Exception as e:
                     print(f"  ✗ {exp_name}: Error reading metadata: {e}")
             else:
-                print(f"  ℹ {exp_name}: No metadata file")
+                print(f"    [INFO]{exp_name}: No metadata file")
                 continue
 
-            # Look for results files - prefer JSON, fallback to txt
             threshold_json = exp_dir / "threshold_results.json"
             results = None
 
@@ -377,13 +373,9 @@ def main():
     actual = get_actual_experiments(args.results_dir, models_config)
     print(f"Found {len(actual)} completed experiments")
 
-    # Find missing
     missing = find_missing_experiments(expected, actual)
-
-    # Print summary
     print_missing_summary(missing, actual, expected)
 
-    # Generate config if requested
     if args.generate_config and missing:
         generate_missing_config(missing, exp_config, args.generate_config)
 
@@ -406,7 +398,7 @@ def main():
 
     # Exit with appropriate code
     if missing:
-        print(f"\n⚠ {len(missing)} experiments still need to be run")
+        print(f"\n[WARNING] {len(missing)} experiments still need to be run")
         return 1
     else:
         print("\n✓ All experiments completed!")
