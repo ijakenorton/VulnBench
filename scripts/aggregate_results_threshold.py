@@ -36,7 +36,6 @@ def extract_results_from_directory(results_dir):
     """
     all_results = []
     missing_results = []
-    validation_warnings = []
 
     for model_dir in Path(results_dir).iterdir():
         if not model_dir.is_dir():
@@ -64,16 +63,9 @@ def extract_results_from_directory(results_dir):
                     dataset = metadata.get("dataset_name", "unknown")
                     anonymized = metadata.get("anonymized", False)
 
-                    # If dataset is unknown (old metadata), try to extract from directory name
                     if dataset == "unknown":
-                        dataset_from_dir, _, _, anon_from_dir = parse_legacy_dirname(
-                            exp_name
-                        )
-                        if dataset_from_dir:
-                            dataset = dataset_from_dir
-                            # If anonymized wasn't in metadata, use value from directory
-                            if not metadata.get("anonymized"):
-                                anonymized = anon_from_dir
+                        print(f"  [WARNING]{exp_name}: Missing dataset_name in metadata, skipping")
+                        continue
 
                     # Get seed from metadata (prefer from filename for backwards compatibility)
                     # Extract seed from train/val/test file paths or split_files
@@ -107,7 +99,7 @@ def extract_results_from_directory(results_dir):
                                 seed = int(seed_match.group(1))
                             else:
                                 print(
-                                    f"  ⚠ {exp_name}: Could not extract seed from metadata or directory name"
+                                    f"    [WARNING]{exp_name}: Could not extract seed from metadata or directory name"
                                 )
                                 seed = 0  # Default to 0 if we can't find it
 
@@ -119,32 +111,16 @@ def extract_results_from_directory(results_dir):
 
                     pos_weight = hyperparams.get("pos_weight", 1.0)
                     learning_rate = hyperparams.get("learning_rate", 2e-5)
-                    dropout = hyperparams.get("dropout_probability", 0.1)
-                    epochs = hyperparams.get("epochs", 5)
-
-                    # Validate metadata consistency with directory name
-                    warnings = validate_metadata_consistency(
-                        exp_name, dataset, anonymized, pos_weight, seed, metadata
-                    )
-                    if warnings:
-                        validation_warnings.extend(warnings)
-                        for warning in warnings:
-                            print(f"  ⚠ {exp_name}: {warning}")
+                    dropout_probability = hyperparams.get("dropout_probability", 0.2)
+                    epoch = hyperparams.get("epoch", hyperparams.get("epochs", 5))
 
                 except Exception as e:
                     print(f"  ✗ {exp_name}: Error reading metadata: {e}")
-                    # Fallback to legacy directory name parsing
-                    dataset, seed, pos_weight, anonymized = parse_legacy_dirname(
-                        exp_name
-                    )
-                    if dataset is None:
-                        continue
-            else:
-                # No metadata file - use legacy directory name parsing
-                print(f"  ℹ {exp_name}: No metadata file, using legacy parsing")
-                dataset, seed, pos_weight, anonymized = parse_legacy_dirname(exp_name)
-                if dataset is None:
                     continue
+            else:
+                # No metadata file - skip this experiment
+                print(f"  [INFO]{exp_name}: No metadata file, skipping")
+                continue
 
             # Look for results files - prefer JSON, fallback to txt
             threshold_json = exp_dir / "threshold_results.json"
@@ -165,6 +141,9 @@ def extract_results_from_directory(results_dir):
                         "dataset": dataset,
                         "seed": seed,
                         "pos_weight": pos_weight,
+                        "learning_rate": learning_rate,
+                        "dropout_probability": dropout_probability,
+                        "epoch": epoch,
                         "anonymized": anonymized,
                         "exp_dir": str(exp_dir),
                     }
@@ -191,122 +170,7 @@ def extract_results_from_directory(results_dir):
                     f"  ✗ {exp_name}: No threshold_results.json or threshold_comparison.txt found"
                 )
 
-    # Report validation warnings at the end
-    if validation_warnings:
-        print("\n" + "=" * 80)
-        print(f"VALIDATION WARNINGS ({len(validation_warnings)} total)")
-        print("=" * 80)
-        for warning in validation_warnings[:10]:  # Show first 10
-            print(f"  • {warning}")
-        if len(validation_warnings) > 10:
-            print(f"  ... and {len(validation_warnings) - 10} more warnings")
-
     return all_results, missing_results
-
-
-def parse_legacy_dirname(exp_name):
-    """
-    Parse directory name using legacy format (for backwards compatibility)
-    Returns: (dataset, seed, pos_weight, anonymized)
-    """
-    # Handle pattern: "dataset_seed123" or "dataset_pos2.0_seed123" or "dataset_anon_seed123_splits"
-    if "_seed" not in exp_name:
-        return None, None, None, False
-
-    # Check for anonymized flag
-    anonymized = "_anon" in exp_name or "anonymized" in exp_name.lower()
-
-    # Extract seed
-    seed_match = re.search(r"_seed(\d+)", exp_name)
-    if not seed_match:
-        return None, None, None, False
-    seed = int(seed_match.group(1))
-
-    # Get the part before seed
-    parts = exp_name.split("_seed")[0]
-
-    # Remove 'anon' if present
-    parts = parts.replace("_anon", "")
-
-    # Check for pos_weight
-    pos_weight = 1.0
-    if "_pos" in parts:
-        pos_parts = parts.split("_pos")
-        dataset = pos_parts[0]
-        # Extract pos_weight value (may have other suffixes after it)
-        pos_value_str = pos_parts[1].split("_")[0]
-        try:
-            pos_weight = float(pos_value_str)
-        except ValueError:
-            pass  # Keep default
-    else:
-        # Remove common suffixes to get clean dataset name
-        dataset = parts.replace("_splits", "").replace("_split", "")
-
-    return dataset, seed, pos_weight, anonymized
-
-
-def validate_metadata_consistency(
-    exp_name, dataset, anonymized, pos_weight, seed, metadata
-):
-    """
-    Validate that metadata is consistent with directory name and data files.
-    Returns list of warning messages.
-    """
-    warnings = []
-
-    # Check anonymized flag consistency with directory name
-    has_anon_in_name = "_anon" in exp_name.lower() or "anonymized" in exp_name.lower()
-    if anonymized != has_anon_in_name:
-        warnings.append(
-            f"Anonymized flag mismatch: metadata says {anonymized} but directory name "
-            f"{'contains' if has_anon_in_name else 'does not contain'} 'anon'"
-        )
-
-    # Check if anonymized flag matches data file paths
-    for split in ["train", "valid", "test"]:
-        file_key = f"{split}_file"
-        if file_key in metadata:
-            file_path = metadata[file_key].lower()
-            has_anon_in_path = "anon" in file_path or "anonymized" in file_path
-            if anonymized != has_anon_in_path:
-                warnings.append(
-                    f"Anonymized flag mismatch in {split}_file: metadata says {anonymized} "
-                    f"but path {'contains' if has_anon_in_path else 'does not contain'} 'anon'"
-                )
-                break  # Only report once
-
-    # Check dataset name consistency
-    if "_seed" in exp_name:
-        # Extract dataset from directory name for comparison
-        dir_dataset, _, _, _ = parse_legacy_dirname(exp_name)
-        if dir_dataset and dir_dataset != dataset:
-            warnings.append(
-                f"Dataset name mismatch: metadata says '{dataset}' but directory suggests '{dir_dataset}'"
-            )
-
-    # Check seed consistency
-    seed_in_name = re.search(r"seed(\d+)", exp_name)
-    if seed_in_name:
-        name_seed = int(seed_in_name.group(1))
-        if name_seed != seed:
-            warnings.append(
-                f"Seed mismatch: metadata says {seed} but directory name has {name_seed}"
-            )
-
-    # Validate pos_weight in directory name if present
-    if "_pos" in exp_name:
-        pos_match = re.search(r"_pos([\d.]+)", exp_name)
-        if pos_match:
-            name_pos_weight = float(pos_match.group(1))
-            if (
-                abs(name_pos_weight - pos_weight) > 0.01
-            ):  # Allow small floating point differences
-                warnings.append(
-                    f"pos_weight mismatch: metadata says {pos_weight} but directory name has {name_pos_weight}"
-                )
-
-    return warnings
 
 
 def parse_threshold_json(threshold_json):
@@ -434,13 +298,15 @@ def aggregate_results(all_results):
     if "anonymized" not in df.columns:
         df["anonymized"] = False
 
-    # Group by model, dataset, pos_weight, and anonymized flag
+    # Group by model, dataset, hyperparameters, and anonymized flag
     # CRITICAL: Separate anonymized experiments to prevent mixing results
-    grouped = df.groupby(["model", "dataset", "pos_weight", "anonymized"])
+    groupby_cols = ["model", "dataset", "pos_weight", "learning_rate", "dropout_probability", "epoch", "anonymized"]
+    grouped = df.groupby(groupby_cols)
 
     aggregated = []
 
-    for (model, dataset, pos_weight, anonymized), group in grouped:
+    for group_keys, group in grouped:
+        model, dataset, pos_weight, learning_rate, dropout_probability, epoch, anonymized = group_keys
         if len(group) < 2:
             anon_label = " [ANON]" if anonymized else ""
             print(
@@ -463,6 +329,9 @@ def aggregate_results(all_results):
             "model": model,
             "dataset": dataset,
             "pos_weight": pos_weight,
+            "learning_rate": learning_rate,
+            "dropout_probability": dropout_probability,
+            "epoch": epoch,
             "anonymized": anonymized,
             "n_seeds": len(group),
             "seeds": sorted(group["seed"].tolist()),
@@ -521,6 +390,9 @@ def format_results_table(df):
         "model",
         "dataset_display",
         "pos_weight",
+        "learning_rate",
+        "dropout_probability",
+        "epoch",
         "n_seeds",
         "optimal_f1_formatted",
         "optimal_accuracy_formatted",
@@ -533,6 +405,9 @@ def format_results_table(df):
         "Model",
         "Dataset",
         "Pos Weight",
+        "LR",
+        "Dropout",
+        "Epochs",
         "Seeds",
         "F1",
         "Accuracy",

@@ -69,7 +69,6 @@ class ExperimentRunner:
 
         # Experiment config
         env["seed"] = str(seed)
-        env["pos_weight"] = str(experiment.pos_weight)
         env["epoch"] = str(experiment.epoch)
         env["out_suffix"] = experiment.out_suffix
 
