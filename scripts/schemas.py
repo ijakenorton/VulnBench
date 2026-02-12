@@ -64,6 +64,10 @@ class ExperimentConfig:
     cb_beta: float = 0.9999
     focal_gamma: float = 2.0
 
+    # Checkpoint selection metric (which checkpoint to load at eval/test time;
+    # during training, checkpoints are saved for all metrics)
+    best_metric: Literal["acc", "f1", "auc"] = "acc"
+
     # Whether to log to wandb
     use_wandb: bool = True
     wandb_project: str = "vulnerability-benchmark"

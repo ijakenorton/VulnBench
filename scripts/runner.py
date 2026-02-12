@@ -113,6 +113,7 @@ class ExperimentRunner:
             "max_grad_norm": 1.0,
             "dropout_probability": 0.2,
             "loss_type": "bce",
+            "best_metric": "acc",
         }
 
         ARGS_TRANSFORM = {
@@ -122,6 +123,7 @@ class ExperimentRunner:
             "max_grad_norm": "gnorm",
             "dropout_probability": "drop",
             "loss_type": "lt",
+            "best_metric": "bm",
         }
 
         hyperparam_suffixes = []
@@ -244,6 +246,9 @@ class ExperimentRunner:
                 f"--focal_gamma={experiment.focal_gamma}",
             ]
         )
+
+        # Add checkpoint selection metric
+        cmd.append(f"--best_metric={experiment.best_metric}")
 
         # Add threshold optimization parameters (inference time)
         cmd.extend(

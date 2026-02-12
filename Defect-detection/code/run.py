@@ -290,6 +290,8 @@ def train(args, train_dataset, model, tokenizer, tb_writer=None):
     tr_loss, logging_loss, avg_loss, tr_nb, tr_num, train_loss = 0.0, 0.0, 0.0, 0, 0, 0
     best_mrr = 0.0
     best_acc = 0.0
+    best_f1 = 0.0
+    best_auc = 0.0
     model.zero_grad()
 
     early_stopping_counter = 0
@@ -417,46 +419,64 @@ def train(args, train_dataset, model, tokenizer, tb_writer=None):
                         for key, value in results.items():
                             logger.info("  %s = %s", key, round(value, 4))
 
-                        # Save model checkpoint if best
-                        if results["eval_acc"] > best_acc:
-                            best_acc = results["eval_acc"]
-                            
-                            # Log best model to wandb
-                            if args.use_wandb:
-                                wandb.log({
-                                    "best/accuracy": best_acc,
-                                    "best/epoch": idx,
-                                    "best/global_step": global_step
-                                }, step=global_wandb_step)
-                            
-                            logger.info("  " + "*" * 20)
-                            logger.info("  Best acc:%s", round(best_acc, 4))
-                            logger.info("  " + "*" * 20)
+                        # Save model checkpoints for all metrics that improved
+                        eval_acc_val = results.get("eval_acc", 0)
+                        eval_f1_val = results.get("eval_f1", 0)
+                        eval_auc_val = results.get("eval_auc", 0)
 
-                            checkpoint_prefix = "checkpoint-best-acc"
-                            checkpoint_dir = os.path.join(args.output_dir, "{}".format(checkpoint_prefix))
-                            if not os.path.exists(checkpoint_dir):
-                                os.makedirs(checkpoint_dir)
-                            model_to_save = (
-                                model.module if hasattr(model, "module") else model
-                            )
+                        # Check each metric and save checkpoint if improved
+                        metrics_to_check = [
+                            ("acc", eval_acc_val, best_acc),
+                            ("f1", eval_f1_val, best_f1),
+                            ("auc", eval_auc_val, best_auc),
+                        ]
 
-                            # Save model weights
-                            if args.model_type == "gradient_boosting":
-                                # Gradient boosting uses pickle-based saving
-                                model_to_save.save_pretrained(checkpoint_dir)
-                                logger.info("Saving gradient boosting model to %s", checkpoint_dir)
-                            else:
-                                model_path = os.path.join(checkpoint_dir, "model.bin")
-                                torch.save(model_to_save.state_dict(), model_path)
-                                logger.info("Saving model checkpoint to %s", model_path)
+                        # Update best values
+                        if eval_acc_val > best_acc:
+                            best_acc = eval_acc_val
+                        if eval_f1_val > best_f1:
+                            best_f1 = eval_f1_val
+                        if eval_auc_val > best_auc:
+                            best_auc = eval_auc_val
 
-                            # Save config.json
-                            # Get config from the model (wrapped models store it as model.config)
-                            if hasattr(model_to_save, 'config'):
-                                config_path = os.path.join(checkpoint_dir, "config.json")
-                                model_to_save.config.save_pretrained(checkpoint_dir)
-                                logger.info("Saving model config to %s", config_path)
+                        for metric_label, current_val, prev_best in metrics_to_check:
+                            if current_val > prev_best:
+                                checkpoint_prefix = f"checkpoint-best-{metric_label}"
+                                checkpoint_dir = os.path.join(args.output_dir, checkpoint_prefix)
+                                if not os.path.exists(checkpoint_dir):
+                                    os.makedirs(checkpoint_dir)
+
+                                logger.info("  " + "*" * 20)
+                                logger.info("  Best %s:%s", metric_label, round(current_val, 4))
+                                logger.info("  " + "*" * 20)
+
+                                model_to_save = (
+                                    model.module if hasattr(model, "module") else model
+                                )
+
+                                # Save model weights
+                                if args.model_type == "gradient_boosting":
+                                    model_to_save.save_pretrained(checkpoint_dir)
+                                    logger.info("Saving gradient boosting model to %s", checkpoint_dir)
+                                else:
+                                    model_path = os.path.join(checkpoint_dir, "model.bin")
+                                    torch.save(model_to_save.state_dict(), model_path)
+                                    logger.info("Saving model checkpoint to %s", model_path)
+
+                                # Save config.json
+                                if hasattr(model_to_save, 'config'):
+                                    model_to_save.config.save_pretrained(checkpoint_dir)
+                                    logger.info("Saving model config to %s", checkpoint_dir)
+
+                        # Log best metrics to wandb
+                        if args.use_wandb:
+                            wandb.log({
+                                "best/accuracy": best_acc,
+                                "best/f1": best_f1,
+                                "best/auc": best_auc,
+                                "best/epoch": idx,
+                                "best/global_step": global_step
+                            }, step=global_wandb_step)
 
         # END OF STEP LOOP - Log epoch metrics to wandb
         if args.use_wandb and args.local_rank in [-1, 0]:
@@ -464,7 +484,9 @@ def train(args, train_dataset, model, tokenizer, tb_writer=None):
                 "epoch/avg_loss": avg_loss,
                 "epoch/examples_processed": tr_num * args.train_batch_size,
                 "epoch/epoch": idx,
-                "epoch/best_acc": best_acc
+                "epoch/best_acc": best_acc,
+                "epoch/best_f1": best_f1,
+                "epoch/best_auc": best_auc
             }, step=global_wandb_step)
 
         # Log epoch metrics to tensorboard
@@ -473,6 +495,8 @@ def train(args, train_dataset, model, tokenizer, tb_writer=None):
             tb_writer.add_scalar("epoch/examples_processed", tr_num * args.train_batch_size, global_wandb_step)
             tb_writer.add_scalar("epoch/epoch", idx, global_wandb_step)
             tb_writer.add_scalar("epoch/best_acc", best_acc, global_wandb_step)
+            tb_writer.add_scalar("epoch/best_f1", best_f1, global_wandb_step)
+            tb_writer.add_scalar("epoch/best_auc", best_auc, global_wandb_step)
         
         # Calculate average loss for the epoch (existing code)
         avg_loss = train_loss / tr_num
@@ -751,11 +775,13 @@ def _test_debug(args, model, tokenizer):
     logger.info(f"  Mean: {logits.mean():.4f}, Std: {logits.std():.4f}")
     logger.info(f"  Label distribution: Positive={(labels==1).sum()}, Negative={(labels==0).sum()}")
 
-def test(args, model, tokenizer, tb_writer=None):
-    # Load test dataset
-    eval_dataset = TextDataset(tokenizer, args, args.test_data_file)
+def run_inference(args, model, tokenizer, eval_dataset=None):
+    """Run model inference. If eval_dataset is provided, reuses it instead of loading from disk.
+    Returns (eval_dataset, logits, labels)."""
+    if eval_dataset is None:
+        eval_dataset = TextDataset(tokenizer, args, args.test_data_file)
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
-    
+
     eval_sampler = (
         SequentialSampler(eval_dataset)
         if args.local_rank == -1
@@ -771,11 +797,11 @@ def test(args, model, tokenizer, tb_writer=None):
     logger.info("***** Running Test *****")
     logger.info("  Num examples = %d", len(eval_dataset))
     logger.info("  Batch size = %d", args.eval_batch_size)
-    
+
     model.eval()
     logits = []
     labels = []
-    
+
     for batch in tqdm(eval_dataloader, total=len(eval_dataloader)):
         inputs = batch[0].to(args.device)
         label = batch[1].to(args.device)
@@ -786,6 +812,16 @@ def test(args, model, tokenizer, tb_writer=None):
 
     logits = np.concatenate(logits, 0)
     labels = np.concatenate(labels, 0)
+    return eval_dataset, logits, labels
+
+
+def test(args, model, tokenizer, tb_writer=None, write_artifacts=True, precomputed=None):
+    """Run test evaluation. If precomputed=(eval_dataset, logits, labels) is provided,
+    skip inference and use the provided data directly."""
+    if precomputed is not None:
+        eval_dataset, logits, labels = precomputed
+    else:
+        eval_dataset, logits, labels = run_inference(args, model, tokenizer)
     
     # Print logits statistics for analysis
     logger.info("Logits statistics:")
@@ -854,7 +890,7 @@ def test(args, model, tokenizer, tb_writer=None):
     logger.info(f"Optimal threshold ({best_threshold:.3f}): F1={best_metrics['f1']:.4f}, Precision={best_metrics['precision']:.4f}, Recall={best_metrics['recall']:.4f}")
     
     # Save detailed threshold analysis
-    if threshold_results is not None:
+    if write_artifacts and threshold_results is not None:
         threshold_file = os.path.join(args.output_dir, "threshold_analysis.txt")
         with open(threshold_file, "w") as f:
             f.write("Threshold\tAccuracy\tPrecision\tRecall\tF1\tMCC\tKappa\tTP\tFP\tFN\tTN\n")
@@ -869,62 +905,64 @@ def test(args, model, tokenizer, tb_writer=None):
     final_preds = logits[:, 0] > best_threshold
 
     # Save predictions
-    with open(os.path.join(args.output_dir, "predictions.txt"), "w") as f:
-        for example, pred in zip(eval_dataset.examples, final_preds):
-            f.write(f"{example.idx}\t{int(pred)}\n")
+    if write_artifacts:
+        with open(os.path.join(args.output_dir, "predictions.txt"), "w") as f:
+            for example, pred in zip(eval_dataset.examples, final_preds):
+                f.write(f"{example.idx}\t{int(pred)}\n")
 
     # Save comparison of thresholds
-    comparison_file = os.path.join(args.output_dir, "threshold_comparison.txt")
-    with open(comparison_file, "w") as f:
-        f.write("=== THRESHOLD OPTIMIZATION REPORT ===\n")
-        f.write(f"Method: {args.threshold_method}\n")
-        f.write(f"Optimization metric: {args.threshold_metric}\n")
-        if args.threshold_metric == "precision":
-            f.write(f"Min recall constraint: {args.min_recall:.2f}\n")
-            f.write(f"Threshold precision weight: {args.threshold_precision_weight:.1f}\n")
+    if write_artifacts:
+        comparison_file = os.path.join(args.output_dir, "threshold_comparison.txt")
+        with open(comparison_file, "w") as f:
+            f.write("=== THRESHOLD OPTIMIZATION REPORT ===\n")
+            f.write(f"Method: {args.threshold_method}\n")
+            f.write(f"Optimization metric: {args.threshold_metric}\n")
+            if args.threshold_metric == "precision":
+                f.write(f"Min recall constraint: {args.min_recall:.2f}\n")
+                f.write(f"Threshold precision weight: {args.threshold_precision_weight:.1f}\n")
 
-        # Add GHOST-specific parameters if applicable
-        if args.threshold_method in ["ghost", "both"]:
-            f.write(f"\nGHOST Parameters:\n")
-            f.write(f"  Number of subsets: {args.ghost_n_subsets}\n")
-            f.write(f"  Subset size: {args.ghost_subset_size}\n")
-            if 'ghost_stats' in locals():
-                f.write(f"  Median {args.threshold_metric}: {ghost_stats['optimal_median_score']:.4f}±{ghost_stats['optimal_std_score']:.4f}\n")
+            # Add GHOST-specific parameters if applicable
+            if args.threshold_method in ["ghost", "both"]:
+                f.write(f"\nGHOST Parameters:\n")
+                f.write(f"  Number of subsets: {args.ghost_n_subsets}\n")
+                f.write(f"  Subset size: {args.ghost_subset_size}\n")
+                if 'ghost_stats' in locals():
+                    f.write(f"  Median {args.threshold_metric}: {ghost_stats['optimal_median_score']:.4f}±{ghost_stats['optimal_std_score']:.4f}\n")
 
-        f.write(f"\nData Statistics:\n")
-        f.write(f"Logits range: [{logits.min():.4f}, {logits.max():.4f}]\n")
-        f.write(f"Logits mean±std: {logits.mean():.4f}±{logits.std():.4f}\n")
-        f.write(f"Label distribution: {(labels==1).sum()} positive, {(labels==0).sum()} negative\n\n")
+            f.write(f"\nData Statistics:\n")
+            f.write(f"Logits range: [{logits.min():.4f}, {logits.max():.4f}]\n")
+            f.write(f"Logits mean±std: {logits.mean():.4f}±{logits.std():.4f}\n")
+            f.write(f"Label distribution: {(labels==1).sum()} positive, {(labels==0).sum()} negative\n\n")
 
-        f.write("Default Threshold (0.5):\n")
-        for key, value in default_metrics.items():
-            if isinstance(value, float):
-                f.write(f"  {key}: {value:.4f}\n")
-            else:
-                f.write(f"  {key}: {value}\n")
-
-        f.write(f"\nOptimal Threshold ({best_threshold:.3f}) [{args.threshold_method}]:\n")
-        for key, value in best_metrics.items():
-            if isinstance(value, float):
-                f.write(f"  {key}: {value:.4f}\n")
-            else:
-                f.write(f"  {key}: {value}\n")
-
-        # Add comparison for "both" method
-        if args.threshold_method == "both" and 'grid_threshold' in locals():
-            f.write(f"\nGrid Search Threshold ({grid_threshold:.3f}):\n")
-            for key, value in grid_metrics.items():
+            f.write("Default Threshold (0.5):\n")
+            for key, value in default_metrics.items():
                 if isinstance(value, float):
                     f.write(f"  {key}: {value:.4f}\n")
                 else:
                     f.write(f"  {key}: {value}\n")
 
-        f.write(f"\nImprovement over default (0.5):\n")
-        f.write(f"  F1: {best_metrics['f1'] - default_metrics['f1']:+.4f}\n")
-        f.write(f"  Precision: {best_metrics['precision'] - default_metrics['precision']:+.4f}\n")
-        f.write(f"  Recall: {best_metrics['recall'] - default_metrics['recall']:+.4f}\n")
-        f.write(f"  MCC: {best_metrics['mcc'] - default_metrics['mcc']:+.4f}\n")
-        f.write(f"  Kappa: {best_metrics['kappa'] - default_metrics['kappa']:+.4f}\n")
+            f.write(f"\nOptimal Threshold ({best_threshold:.3f}) [{args.threshold_method}]:\n")
+            for key, value in best_metrics.items():
+                if isinstance(value, float):
+                    f.write(f"  {key}: {value:.4f}\n")
+                else:
+                    f.write(f"  {key}: {value}\n")
+
+            # Add comparison for "both" method
+            if args.threshold_method == "both" and 'grid_threshold' in locals():
+                f.write(f"\nGrid Search Threshold ({grid_threshold:.3f}):\n")
+                for key, value in grid_metrics.items():
+                    if isinstance(value, float):
+                        f.write(f"  {key}: {value:.4f}\n")
+                    else:
+                        f.write(f"  {key}: {value}\n")
+
+            f.write(f"\nImprovement over default (0.5):\n")
+            f.write(f"  F1: {best_metrics['f1'] - default_metrics['f1']:+.4f}\n")
+            f.write(f"  Precision: {best_metrics['precision'] - default_metrics['precision']:+.4f}\n")
+            f.write(f"  Recall: {best_metrics['recall'] - default_metrics['recall']:+.4f}\n")
+            f.write(f"  MCC: {best_metrics['mcc'] - default_metrics['mcc']:+.4f}\n")
+            f.write(f"  Kappa: {best_metrics['kappa'] - default_metrics['kappa']:+.4f}\n")
 
     # Save as JSON for easier parsing
     comparison_json = {
@@ -987,11 +1025,12 @@ def test(args, model, tokenizer, tb_writer=None):
             "precision_weight": args.threshold_precision_weight
         }
 
-    json_file = os.path.join(args.output_dir, "threshold_results.json")
-    with open(json_file, "w") as f:
-        json.dump(comparison_json, f, indent=2)
+    if write_artifacts:
+        json_file = os.path.join(args.output_dir, "threshold_results.json")
+        with open(json_file, "w") as f:
+            json.dump(comparison_json, f, indent=2)
 
-    # Return both results for comparison
+    # Build summary result for logging
     result = {
         "test_acc": round(best_metrics["accuracy"], 4),
         "precision": round(best_metrics["precision"], 4),
@@ -1001,12 +1040,12 @@ def test(args, model, tokenizer, tb_writer=None):
         "default_f1": round(default_metrics["f1"], 4),
         "improvement": round(best_metrics["f1"] - default_metrics["f1"], 4)
     }
-    
+
     logger.info("***** Final Test Results *****")
     for key, value in result.items():
         logger.info(f"  {key} = {value}")
 
-    if args.use_wandb and args.local_rank in [-1, 0]:
+    if write_artifacts and args.use_wandb and args.local_rank in [-1, 0]:
         wandb.log({
             "test/accuracy": result["test_acc"],
             "test/precision": result["precision"],
@@ -1017,25 +1056,24 @@ def test(args, model, tokenizer, tb_writer=None):
         })
 
     # Log test results to tensorboard
-    if tb_writer is not None and args.local_rank in [-1, 0]:
+    if write_artifacts and tb_writer is not None and args.local_rank in [-1, 0]:
         tb_writer.add_scalar("test/accuracy", result["test_acc"], 0)
         tb_writer.add_scalar("test/precision", result["precision"], 0)
         tb_writer.add_scalar("test/recall", result["recall"], 0)
         tb_writer.add_scalar("test/f1", result["f1"], 0)
         tb_writer.add_scalar("test/optimal_threshold", result["optimal_threshold"], 0)
         tb_writer.add_scalar("test/improvement", result["improvement"], 0)
-        
+
         # Log threshold analysis table
-        #threshold_results = []  
         wandb.log({
             "test/threshold_analysis": wandb.Table(
                 columns=["threshold", "accuracy", "precision", "recall", "f1"],
-                data=[[t["threshold"], t["accuracy"], t["precision"], t["recall"], t["f1"]] 
+                data=[[t["threshold"], t["accuracy"], t["precision"], t["recall"], t["f1"]]
                       for t in threshold_results[:20]]  # Log top 20 thresholds
             )
         })
-    
-    return result
+
+    return comparison_json
 
 def copy_split_metadata_to_output(args):
     """
@@ -1092,6 +1130,7 @@ def copy_split_metadata_to_output(args):
         "block_size": args.block_size,
         "max_grad_norm": args.max_grad_norm,
         "loss_type": args.loss_type,
+        "best_metric": args.best_metric,
     }
 
     # Identify non-default hyperparameters
@@ -1567,6 +1606,18 @@ def main():
              "Controls focusing on hard examples. Default: 2.0"
     )
 
+    # Checkpoint selection metric
+    parser.add_argument(
+        "--best_metric",
+        default="acc",
+        type=str,
+        choices=["acc", "f1", "auc"],
+        help="Metric to use for loading best checkpoint at eval/test time: "
+             "'acc' (default, accuracy), 'f1' (F1 score), or 'auc' (ROC AUC). "
+             "During training, checkpoints are saved for ALL metrics that improve. "
+             "This flag controls which checkpoint is loaded for evaluation."
+    )
+
     # Threshold optimization args (POST-TRAINING inference)
     parser.add_argument(
         "--threshold_method",
@@ -1888,13 +1939,30 @@ def main():
         # Use source_checkpoint_dir for cross-dataset testing if provided
         checkpoint_base_dir = args.source_checkpoint_dir if args.source_checkpoint_dir else args.output_dir
 
+        # Auto-detect checkpoint: prefer best_metric, fall back to others
+        all_metrics = ["acc", "f1", "auc"]
+        checkpoint_candidates = [f"checkpoint-best-{args.best_metric}"] + [
+            f"checkpoint-best-{m}" for m in all_metrics if m != args.best_metric
+        ]
+
         if args.model_type == "gradient_boosting":
-            # Gradient boosting loads from directory, not .bin file
-            checkpoint_dir = os.path.join(checkpoint_base_dir, "checkpoint-best-acc")
-            output_dir = checkpoint_dir
+            output_dir = None
+            for candidate in checkpoint_candidates:
+                candidate_dir = os.path.join(checkpoint_base_dir, candidate)
+                if os.path.exists(candidate_dir):
+                    output_dir = candidate_dir
+                    break
+            if output_dir is None:
+                output_dir = os.path.join(checkpoint_base_dir, checkpoint_candidates[0])
         else:
-            checkpoint_prefix = "checkpoint-best-acc/model.bin"
-            output_dir = os.path.join(checkpoint_base_dir, "{}".format(checkpoint_prefix))
+            output_dir = None
+            for candidate in checkpoint_candidates:
+                candidate_path = os.path.join(checkpoint_base_dir, candidate, "model.bin")
+                if os.path.exists(candidate_path):
+                    output_dir = candidate_path
+                    break
+            if output_dir is None:
+                output_dir = os.path.join(checkpoint_base_dir, checkpoint_candidates[0], "model.bin")
 
         # Load checkpoint or validate pretrained-only usage
         if os.path.exists(output_dir):
@@ -1935,40 +2003,88 @@ def main():
         # Use source_checkpoint_dir for cross-dataset testing if provided
         checkpoint_base_dir = args.source_checkpoint_dir if args.source_checkpoint_dir else args.output_dir
 
-        if args.model_type == "gradient_boosting":
-            # Gradient boosting loads from directory, not .bin file
-            checkpoint_dir = os.path.join(checkpoint_base_dir, "checkpoint-best-acc")
-            output_dir = checkpoint_dir
-        else:
-            checkpoint_prefix = "checkpoint-best-acc/model.bin"
-            output_dir = os.path.join(checkpoint_base_dir, "{}".format(checkpoint_prefix))
+        # Scan for all available checkpoint-best-* directories
+        all_checkpoint_metrics = ["acc", "f1", "auc"]
+        found_checkpoints = {}
 
-        # Load checkpoint or validate pretrained-only usage
-        if os.path.exists(output_dir):
-            logger.info(f"Loading checkpoint from {output_dir}")
+        # Load test dataset once and reuse across checkpoints
+        eval_dataset = TextDataset(tokenizer, args, args.test_data_file)
+        args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+        eval_sampler = (
+            SequentialSampler(eval_dataset)
+            if args.local_rank == -1
+            else DistributedSampler(eval_dataset)
+        )
+        eval_dataloader = DataLoader(
+            eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size
+        )
+
+        for metric in all_checkpoint_metrics:
+            checkpoint_dir_name = f"checkpoint-best-{metric}"
+            if args.model_type == "gradient_boosting":
+                checkpoint_path = os.path.join(checkpoint_base_dir, checkpoint_dir_name)
+                checkpoint_exists = os.path.exists(checkpoint_path)
+            else:
+                checkpoint_path = os.path.join(checkpoint_base_dir, checkpoint_dir_name, "model.bin")
+                checkpoint_exists = os.path.exists(checkpoint_path)
+
+            if not checkpoint_exists:
+                continue
+
+            logger.info(f"Loading checkpoint-best-{metric} from {checkpoint_path}")
             if args.model_type == "gradient_boosting":
                 model_to_load = model.module if hasattr(model, "module") else model
-                model_to_load.load_pretrained(output_dir)
+                model_to_load.load_pretrained(checkpoint_path)
             else:
-                model.load_state_dict(torch.load(output_dir))
+                model.load_state_dict(torch.load(checkpoint_path))
                 model.to(args.device)
-        else:
-            # Checkpoint not found - determine if this is expected
+
+            # Run inference with this checkpoint's weights
+            eval_dataset, logits, labels = run_inference(args, model, tokenizer, eval_dataset=eval_dataset)
+            precomputed = (eval_dataset, logits, labels)
+
+            # Only write artifact files (predictions.txt, threshold_comparison.txt, etc.)
+            # for the primary checkpoint (best_metric)
+            is_primary = (metric == args.best_metric)
+            checkpoint_results = test(args, model, tokenizer, tb_writer if is_primary else None, write_artifacts=is_primary, precomputed=precomputed)
+            found_checkpoints[metric] = checkpoint_results
+
+        if not found_checkpoints:
+            # No checkpoints found at all - handle pretrained-only or error
             if args.do_train:
                 raise RuntimeError(
-                    f"Expected checkpoint at {output_dir} but not found. "
-                    f"Training was requested but checkpoint is missing."
+                    f"Expected checkpoints in {checkpoint_base_dir} but none found. "
+                    f"Training was requested but checkpoints are missing."
                 )
             elif not args.allow_pretrained_only:
                 raise RuntimeError(
-                    f"No checkpoint found at {output_dir}. "
+                    f"No checkpoints found in {checkpoint_base_dir}. "
                     f"To test with pretrained model only, use --allow_pretrained_only flag."
                 )
             else:
-                logger.info(f"No checkpoint found at {output_dir}, using pretrained model from {args.model_name_or_path} (--allow_pretrained_only specified)")
+                logger.info(f"No checkpoints found, using pretrained model from {args.model_name_or_path} (--allow_pretrained_only specified)")
                 model.to(args.device)
+                test(args, model, tokenizer, tb_writer)
+        else:
+            # Write combined threshold_results.json with all checkpoint results
+            combined = {
+                "best_metric": args.best_metric,
+                "results_by_checkpoint": found_checkpoints,
+            }
+            # Backward compat: merge best_metric results at top level
+            if args.best_metric in found_checkpoints:
+                combined.update(found_checkpoints[args.best_metric])
+            else:
+                # best_metric checkpoint not found, use first available
+                first_available = next(iter(found_checkpoints))
+                logger.warning(f"Preferred checkpoint-best-{args.best_metric} not found, "
+                             f"using checkpoint-best-{first_available} for top-level results")
+                combined.update(found_checkpoints[first_available])
 
-        test(args, model, tokenizer, tb_writer)
+            json_file = os.path.join(args.output_dir, "threshold_results.json")
+            with open(json_file, "w") as f:
+                json.dump(combined, f, indent=2)
+            logger.info(f"Wrote combined threshold results for checkpoints: {list(found_checkpoints.keys())}")
 
     if args.use_wandb and args.local_rank in [-1, 0]:
         wandb.finish()

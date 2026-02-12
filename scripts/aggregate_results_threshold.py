@@ -113,6 +113,8 @@ def extract_results_from_directory(results_dir):
                     learning_rate = hyperparams.get("learning_rate", 2e-5)
                     dropout_probability = hyperparams.get("dropout_probability", 0.2)
                     epoch = hyperparams.get("epoch", hyperparams.get("epochs", 5))
+                    loss_type = hyperparams.get("loss_type", "bce")
+                    best_metric = hyperparams.get("best_metric", "acc")
 
                 except Exception as e:
                     print(f"  ✗ {exp_name}: Error reading metadata: {e}")
@@ -128,7 +130,7 @@ def extract_results_from_directory(results_dir):
             summary_file = exp_dir / "experiment_summary.txt"
 
             if threshold_json.exists():
-                results = parse_threshold_json(threshold_json)
+                results = parse_threshold_json(threshold_json, best_metric=best_metric)
             elif threshold_txt.exists():
                 results = parse_threshold_comparison(threshold_txt)
             else:
@@ -144,6 +146,8 @@ def extract_results_from_directory(results_dir):
                         "learning_rate": learning_rate,
                         "dropout_probability": dropout_probability,
                         "epoch": epoch,
+                        "loss_type": loss_type,
+                        "best_metric": best_metric,
                         "anonymized": anonymized,
                         "exp_dir": str(exp_dir),
                     }
@@ -173,11 +177,32 @@ def extract_results_from_directory(results_dir):
     return all_results, missing_results
 
 
-def parse_threshold_json(threshold_json):
-    """Parse threshold_results.json file (new format)"""
+def parse_threshold_json(threshold_json, best_metric=None):
+    """Parse threshold_results.json file.
+
+    Supports both old format (flat structure) and new multi-checkpoint format
+    (with results_by_checkpoint). When new format is detected, uses best_metric
+    to select which checkpoint's results to parse.
+    """
     try:
         with open(threshold_json, "r") as f:
             data = json.load(f)
+
+        # Detect new multi-checkpoint format
+        if "results_by_checkpoint" in data:
+            checkpoint_results = data["results_by_checkpoint"]
+            # Select checkpoint based on best_metric, fall back to file's best_metric, then first available
+            metric_key = best_metric or data.get("best_metric")
+            if metric_key and metric_key in checkpoint_results:
+                data = checkpoint_results[metric_key]
+            elif checkpoint_results:
+                # Fall back to first available checkpoint
+                first_key = next(iter(checkpoint_results))
+                print(f"    [WARNING] best_metric '{metric_key}' not in results_by_checkpoint, using '{first_key}'")
+                data = checkpoint_results[first_key]
+            else:
+                print(f"    [WARNING] results_by_checkpoint is empty in {threshold_json}")
+                return None
 
         results = {}
 
@@ -300,17 +325,17 @@ def aggregate_results(all_results):
 
     # Group by model, dataset, hyperparameters, and anonymized flag
     # CRITICAL: Separate anonymized experiments to prevent mixing results
-    groupby_cols = ["model", "dataset", "pos_weight", "learning_rate", "dropout_probability", "epoch", "anonymized"]
+    groupby_cols = ["model", "dataset", "pos_weight", "learning_rate", "dropout_probability", "epoch", "loss_type", "best_metric", "anonymized"]
     grouped = df.groupby(groupby_cols)
 
     aggregated = []
 
     for group_keys, group in grouped:
-        model, dataset, pos_weight, learning_rate, dropout_probability, epoch, anonymized = group_keys
+        model, dataset, pos_weight, learning_rate, dropout_probability, epoch, loss_type, best_metric, anonymized = group_keys
         if len(group) < 2:
             anon_label = " [ANON]" if anonymized else ""
             print(
-                f"Warning: Only {len(group)} run(s) for {model}/{dataset}/pos{pos_weight}{anon_label}"
+                f"Warning: Only {len(group)} run(s) for {model}/{dataset}/pos{pos_weight}/lt_{loss_type}/bm_{best_metric}{anon_label}"
             )
 
         # Calculate mean and std for key metrics
@@ -332,6 +357,8 @@ def aggregate_results(all_results):
             "learning_rate": learning_rate,
             "dropout_probability": dropout_probability,
             "epoch": epoch,
+            "loss_type": loss_type,
+            "best_metric": best_metric,
             "anonymized": anonymized,
             "n_seeds": len(group),
             "seeds": sorted(group["seed"].tolist()),
@@ -389,6 +416,8 @@ def format_results_table(df):
     pub_columns = [
         "model",
         "dataset_display",
+        "loss_type",
+        "best_metric",
         "pos_weight",
         "learning_rate",
         "dropout_probability",
@@ -404,6 +433,8 @@ def format_results_table(df):
     pub_df.columns = [
         "Model",
         "Dataset",
+        "Loss",
+        "Best By",
         "Pos Weight",
         "LR",
         "Dropout",
@@ -488,6 +519,8 @@ def format_improvement_table(df):
     imp_columns = [
         "model",
         "dataset_display",
+        "loss_type",
+        "best_metric",
         "n_seeds",
         "default_f1_formatted",
         "optimal_threshold_formatted",
@@ -499,6 +532,8 @@ def format_improvement_table(df):
     imp_df.columns = [
         "Model",
         "Dataset",
+        "Loss",
+        "Best By",
         "Seeds",
         "Default F1 (0.5)",
         "Optimal Threshold",
@@ -554,6 +589,7 @@ def report_stats(aggregated_df, args):
 
         print(
             f"{dataset:15s}: {best['model']:12s} "
+            f"loss={best['loss_type']:8s} best_by={best['best_metric']:3s} "
             f"F1={best['optimal_f1_mean']:.3f}±{best['optimal_f1_std']:.3f} "
             f"({best['n_seeds']} seeds)"
         )
