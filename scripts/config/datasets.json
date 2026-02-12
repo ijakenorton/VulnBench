@@ -3,47 +3,47 @@
     "icvul": {
       "name": "icvul",
       "size": "small",
-      "time_hours": 20
+      "time_hours": 30
     },
     "mvdsc_mixed": {
       "name": "mvdsc_mixed",
       "size": "small",
-      "time_hours": 20
+      "time_hours": 30
     },
     "devign": {
       "name": "devign",
       "size": "small",
-      "time_hours": 20
+      "time_hours": 30
     },
     "dedup-devign": {
       "name": "dedup-devign",
       "size": "small",
-      "time_hours": 20
+      "time_hours": 30
     },
     "vuldeepecker": {
       "name": "vuldeepecker",
       "size": "small",
-      "time_hours": 20
+      "time_hours": 30
     },
     "cvefixes": {
       "name": "cvefixes",
       "size": "small",
-      "time_hours": 20
+      "time_hours": 30
     },
     "juliet": {
       "name": "juliet",
       "size": "small",
-      "time_hours": 20
+      "time_hours": 30
     },
     "dedup-big-vul": {
       "name": "dedup-big-vul",
       "size": "small",
-      "time_hours": 20
+      "time_hours": 30
     },
     "reveal": {
       "name": "reveal",
       "size": "small",
-      "time_hours": 20
+      "time_hours": 30
     },
     "diversevul": {
       "name": "diversevul",
