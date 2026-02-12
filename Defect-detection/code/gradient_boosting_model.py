@@ -123,7 +123,9 @@ class GradientBoostingModel(nn.Module):
         print(f"Fitting gradient boosting on {X.shape[0]} samples with {X.shape[1]} features...")
         print(f"Matrix density: {X.nnz / (X.shape[0] * X.shape[1]) * 100:.2f}% (using sparse matrix)")
 
-        # HistGradientBoostingClassifier can handle sparse matrices directly
+        # Convert sparse to dense - HistGradientBoostingClassifier doesn't accept sparse input
+        if hasattr(X, 'toarray'):
+            X = X.toarray()
         self.clf.fit(X, y)
         self.is_fitted = True
 
