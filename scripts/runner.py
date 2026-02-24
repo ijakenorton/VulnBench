@@ -451,6 +451,8 @@ class ExperimentRunner:
                 "datasets": experiment.datasets,
                 "seeds": experiment.seeds,
                 "out_suffix": experiment.out_suffix,
+                "loss_type": experiment.loss_type,
+                "best_metric": experiment.best_metric,
             }
 
             # Get expected and actual experiments
@@ -469,7 +471,8 @@ class ExperimentRunner:
                 return
 
             print(f"\nFound {len(missing)} missing experiments")
-            runs_to_execute = missing
+            # Strip loss_type/best_metric from tuples — experiment config already carries them
+            runs_to_execute = [(m, d, s) for m, d, s, _lt, _bm in missing]
         else:
             # Generate Cartesian product
             runs_to_execute = [

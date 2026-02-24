@@ -545,14 +545,14 @@ def train(args, train_dataset, model, tokenizer, tb_writer=None):
                 results = evaluate(args, model, tokenizer, eval_when_training=True)
                 logger.info("Gradient Boosting Results after fitting: %s", results)
 
-                # Save the fitted model as best checkpoint
-                checkpoint_prefix = "checkpoint-best-acc"
-                checkpoint_dir = os.path.join(args.output_dir, checkpoint_prefix)
-                if not os.path.exists(checkpoint_dir):
-                    os.makedirs(checkpoint_dir)
+                # Save the fitted model under all checkpoint names (GB trains once, so this is always the best)
                 model_to_save = model.module if hasattr(model, "module") else model
-                model_to_save.save_pretrained(checkpoint_dir)
-                logger.info("Saving gradient boosting model to %s", checkpoint_dir)
+                for checkpoint_prefix in ["checkpoint-best-acc", "checkpoint-best-f1", "checkpoint-best-auc"]:
+                    checkpoint_dir = os.path.join(args.output_dir, checkpoint_prefix)
+                    if not os.path.exists(checkpoint_dir):
+                        os.makedirs(checkpoint_dir)
+                    model_to_save.save_pretrained(checkpoint_dir)
+                    logger.info("Saving gradient boosting model to %s", checkpoint_dir)
 
                 # Update best_acc if this is better
                 if results["eval_acc"] > best_acc:

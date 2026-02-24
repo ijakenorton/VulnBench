@@ -88,14 +88,16 @@ def load_experiment_config(config_file: Path, config_dir: Path) -> Dict:
     return config
 
 
-def get_expected_experiments(exp_config: Dict) -> Set[Tuple[str, str, int]]:
-    """Get set of expected (model, dataset, seed) tuples."""
+def get_expected_experiments(exp_config: Dict) -> Set[Tuple[str, str, int, str, str]]:
+    """Get set of expected (model, dataset, seed, loss_type, best_metric) tuples."""
+    loss_type = exp_config.get("loss_type", "bce")
+    best_metric = exp_config.get("best_metric", "acc")
     expected = set()
 
     for model in exp_config["models"]:
         for dataset in exp_config["datasets"]:
             for seed in exp_config["seeds"]:
-                expected.add((model, dataset, seed))
+                expected.add((model, dataset, seed, loss_type, best_metric))
 
     return expected
 
@@ -158,6 +160,8 @@ def extract_missing_results(results_dir, models_config):
 
                     hyperparams = metadata.get("hyperparameters", {})
                     pos_weight = hyperparams.get("pos_weight", 1.0)
+                    loss_type = hyperparams.get("loss_type", "bce")
+                    best_metric = hyperparams.get("best_metric", "acc")
 
                 except Exception as e:
                     print(f"  ✗ {exp_name}: Error reading metadata: {e}")
@@ -179,6 +183,8 @@ def extract_missing_results(results_dir, models_config):
                         "seed": seed,
                         "pos_weight": pos_weight,
                         "anonymized": anonymized,
+                        "loss_type": loss_type,
+                        "best_metric": best_metric,
                         "exp_dir": str(exp_dir),
                     }
                 )
@@ -199,12 +205,13 @@ def extract_missing_results(results_dir, models_config):
 
 def get_actual_experiments(
     results_dir: Path, models_config: Dict
-) -> Set[Tuple[str, str, int]]:
+) -> Set[Tuple[str, str, int, str, str]]:
     """Scan results directory to find actual experiments run.
     Args:
         results_dir: Directory containing model subdirectories
         models_config: Models configuration to map legacy names
-        out_suffix: Suffix used in experiment names (e.g., "splits")
+    Returns:
+        Set of (model, dataset, seed, loss_type, best_metric) tuples.
     """
     actual = set()
 
@@ -213,7 +220,13 @@ def get_actual_experiments(
         return actual
     all_results, missing_results = extract_missing_results(results_dir, models_config)
     for existing in all_results:
-        actual.add((existing["model"], existing["dataset"], existing["seed"]))
+        actual.add((
+            existing["model"],
+            existing["dataset"],
+            existing["seed"],
+            existing.get("loss_type", "bce"),
+            existing.get("best_metric", "acc"),
+        ))
     return actual
 
 
@@ -227,18 +240,12 @@ def generate_missing_config(
     missing_experiments: List[Tuple], original_config: Dict, output_file: Path
 ):
     """Generate a new experiment config for missing runs."""
-    # Group by model and dataset
-    missing_by_model_dataset = defaultdict(set)
-
-    for model, dataset, seed in missing_experiments:
-        missing_by_model_dataset[(model, dataset)].add(seed)
-
-    # Extract unique models and datasets
+    # Extract unique models, datasets, seeds
     models = sorted(set(exp[0] for exp in missing_experiments))
     datasets = sorted(set(exp[1] for exp in missing_experiments))
     seeds = sorted(set(exp[2] for exp in missing_experiments))
 
-    # Create config
+    # Create config, preserving loss_type/best_metric from original
     config = {
         "models": models,
         "datasets": datasets,
@@ -247,11 +254,13 @@ def generate_missing_config(
         "epoch": original_config.get("epoch", 5),
         "out_suffix": original_config.get("out_suffix", "splits"),
         "mode": original_config.get("mode", "train"),
+        "loss_type": original_config.get("loss_type", "bce"),
+        "best_metric": original_config.get("best_metric", "acc"),
         "_metadata": {
             "generated_from": "find_missing_experiments.py",
             "total_missing": len(missing_experiments),
             "missing_details": [
-                {"model": m, "dataset": d, "seed": s} for m, d, s in missing_experiments
+                {"model": m, "dataset": d, "seed": s} for m, d, s, *_ in missing_experiments
             ],
         },
     }
@@ -284,7 +293,7 @@ def print_missing_summary(
         print("-" * 80)
 
         by_model = defaultdict(list)
-        for model, dataset, seed in missing:
+        for model, dataset, seed, *_ in missing:
             by_model[model].append((dataset, seed))
 
         for model in sorted(by_model.keys()):
@@ -305,7 +314,7 @@ def print_missing_summary(
         print("-" * 80)
 
         by_dataset = defaultdict(list)
-        for model, dataset, seed in missing:
+        for model, dataset, seed, *_ in missing:
             by_dataset[dataset].append((model, seed))
 
         for dataset in sorted(by_dataset.keys()):
