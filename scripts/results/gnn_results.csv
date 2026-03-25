@@ -1,0 +1,25 @@
+model,dataset,n_seeds,f1_mean,f1_std,precision_mean,recall_mean,threshold_mean,threshold_std
+GNN-Devign,CVEFixes,3,0.5859,0.0,0.4143,1.0,0.1,0.0
+GNN-Reveal,CVEFixes,3,0.5859,0.0,0.4143,1.0,0.183,0.144
+GNN-Devign,BigVul (dedup),3,0.2973,0.0132,0.292,0.3153,0.25,0.132
+GNN-Reveal,BigVul (dedup),3,0.3262,0.0194,0.2927,0.3725,0.35,0.05
+GNN-Devign,Devign (dedup),3,0.6451,0.0043,0.4897,0.9455,0.3,0.087
+GNN-Reveal,Devign (dedup),3,0.6486,0.0041,0.4928,0.9489,0.333,0.076
+GNN-Devign,Devign,3,0.6248,0.0177,0.4832,0.8962,0.15,0.087
+GNN-Reveal,Devign,3,0.6417,0.0076,0.489,0.9337,0.3,0.1
+GNN-Devign,DiverseVul,3,0.1736,0.0488,0.1225,0.3334,0.333,0.029
+GNN-Reveal,DiverseVul,2,0.1706,0.01,0.106,0.4372,0.325,0.035
+GNN-Devign,Draper,3,0.4315,0.0362,0.434,0.4499,0.2,0.087
+GNN-Reveal,Draper,3,0.528,0.0033,0.4593,0.6219,0.4,0.0
+GNN-Devign,ICVul,3,0.5799,0.0,0.4084,1.0,0.1,0.0
+GNN-Reveal,ICVul,2,0.5799,0.0,0.4098,0.992,0.225,0.177
+GNN-Devign,Juliet,3,0.8945,0.0026,0.8334,0.9667,0.433,0.076
+GNN-Reveal,Juliet,3,0.8964,0.0042,0.841,0.9598,0.467,0.029
+GNN-Devign,MVDSC Mixed,3,0.8215,0.0101,0.8132,0.8309,0.233,0.029
+GNN-Reveal,MVDSC Mixed,3,0.7706,0.0238,0.7461,0.7978,0.483,0.029
+GNN-Devign,PrimeVul,3,0.0989,0.081,0.063,0.7754,0.217,0.126
+GNN-Reveal,PrimeVul,3,0.148,0.0052,0.1309,0.2152,0.4,0.0
+GNN-Devign,Reveal,3,0.178,0.0,0.0977,1.0,0.1,0.0
+GNN-Reveal,Reveal,3,0.3657,0.0406,0.2858,0.5167,0.4,0.05
+GNN-Devign,VulDeepecker,3,0.9366,0.0035,0.9592,0.9151,0.517,0.029
+GNN-Reveal,VulDeepecker,3,0.9331,0.009,0.9591,0.9089,0.583,0.144
